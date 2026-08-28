@@ -1,0 +1,9 @@
+LIQ-RADAR-PROJECT
+=================
+INICIAR_LIQ_RADAR.bat   <- UNICO ARCHIVO QUE DEBES EJECUTAR
+backend/main.py         <- backend FastAPI + collectors + signal engine
+frontend/index.html     <- dashboard web
+requirements.txt        <- dependencias
+.env.example            <- configuracion
+README.md               <- documentacion
+tests/test_signal.py    <- pruebas basicas
