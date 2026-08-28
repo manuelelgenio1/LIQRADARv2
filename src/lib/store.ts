@@ -9,12 +9,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import type {
-  AlertItem, Book, Candle, CrossExchange, JournalEntry, LiqEvent, Mode,
-  OptionsSummary, Outcome, ReplayFrame, SignalResult, SourceHealth, Timeframe, Trade,
+  AlertItem, Book, BriefingLine, Candle, CrossExchange, JournalEntry, LiqEvent, Mode,
+  OptionsSummary, Outcome, ReplayFrame, Sentiment, SignalResult, SourceCard, SourceHealth,
+  Timeframe, Trade,
 } from "../types";
-import { startBinance, startCrossExchange, startOptions, type Callbacks, type StopFn } from "./connectors";
+import {
+  fetchCoincapPrice, fetchSentiment, startAggr, startBinance, startBybitLiq,
+  startCrossExchange, startOkxLiq, startOptions, type Callbacks, type StopFn,
+} from "./connectors";
 import { runEngines, type EngineInput } from "./engines";
-import { isFiniteNumber, safeNumber, uid } from "./safe";
+import {
+  formatBtc, formatCountdown, formatPrice, formatUsd, isFiniteNumber,
+  percentileOf, safeNumber, uid,
+} from "./safe";
 
 export type EngineOutput = ReturnType<typeof runEngines>;
 
@@ -39,6 +46,11 @@ export interface RadarState {
   frames: ReplayFrame[];
   cross: CrossExchange[];
   options: OptionsSummary | null;
+  sentiment: Sentiment | null;
+  briefing: BriefingLine[];
+  liqAgg: { exchange: string; usd: number; count: number }[];
+  basis: { exchange: string; bps: number }[];
+  sources: SourceCard[];
 }
 
 const HEALTH_ORDER: [string, string][] = [
@@ -57,8 +69,59 @@ const HEALTH_ORDER: [string, string][] = [
   ["bn_brackets", "Leverage brackets"],
   ["okx", "OKX (cross-exchange)"],
   ["bybit", "Bybit (cross-exchange)"],
+  ["okx_liq", "OKX liquidation-orders WS"],
+  ["bybit_liq", "Bybit liquidation WS"],
+  ["aggr_liq", "Aggr.trade (multi-exchange)"],
   ["deribit", "Deribit Opciones"],
+  ["sentiment", "Fear & Greed (alternative.me)"],
+  ["coincap", "CoinCap (precio fallback)"],
   ["coinglass", "CoinGlass"],
+];
+
+/* -------- fuentes valoradas por el usuario (panel FUENTES DEL RADAR) -------- */
+
+const SOURCES_INFO: (SourceCard & { healthIds?: string[] })[] = [
+  {
+    name: "MarginPad", stars: 5, kind: "EXTERNA",
+    url: "https://chromewebstore.google.com/detail/marginpad-%E2%80%94-crypto-liquid/fnfmgenngfmflcboejooaeiojnbcinkb",
+    note: "Calculadoras de liquidación y tamaño de posición (extensión). Sin API pública: su cobertura la aportan forceOrder observado + clústeres estimados.",
+  },
+  {
+    name: "Binance WebSockets", stars: 5, kind: "INTEGRADO",
+    url: "https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams",
+    note: "markPrice · aggTrade spot/futuros (CVD) · forceOrder · depth diff con secuencia · OI · funding · ratios · brackets.",
+    healthIds: ["bn_ws", "bn_mark", "bn_l2", "bn_fut_trades", "bn_spot_trades", "bn_liq", "bn_oi", "bn_funding"],
+  },
+  {
+    name: "OKX WebSockets", stars: 5, kind: "INTEGRADO",
+    url: "https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-liquidation-orders-channel",
+    note: "Canal liquidation-orders (SWAP) en vivo + REST de OI, funding y precio para contexto cross-exchange.",
+    healthIds: ["okx", "okx_liq"],
+  },
+  {
+    name: "Bybit WebSockets", stars: 5, kind: "INTEGRADO",
+    url: "https://bybit-exchange.github.io/docs/v5/websocket/public/liquidation",
+    note: "Topic liquidation.BTCUSDT en vivo + REST de OI, funding y precio del mercado lineal.",
+    healthIds: ["bybit", "bybit_liq"],
+  },
+  {
+    name: "CryptoFlow", stars: 4, kind: "CUBIERTO",
+    note: "Flujo spot vs futuros equivalente: Spot CVD y Futures CVD acumulados desde aggTrade real (sin proxy de velas).",
+  },
+  {
+    name: "Flowdepth", stars: 4, kind: "CUBIERTO",
+    note: "Profundidad equivalente: order book L2 reconstruido con secuencia validada, imbalance, absorción y SPOOF_RISK estimado.",
+  },
+  {
+    name: "Basis", stars: 4, kind: "DERIVADO",
+    note: "Basis perp vs Binance calculado en bps con precios reales de OKX y Bybit, más funding comparado por exchange.",
+  },
+  {
+    name: "Aggr.trade", stars: 3, kind: "INTEGRADO",
+    url: "https://aggr.trade/",
+    note: "Liquidaciones multi-exchange agregadas en tiempo real vía WebSocket público (sin API key).",
+    healthIds: ["aggr_liq"],
+  },
 ];
 
 const HORIZONS: { label: string; ms: number }[] = [
@@ -112,6 +175,7 @@ export function useRadar() {
   const bracketsRef = useRef<{ bracket: number; maintenanceMarginRate: number }[]>([]);
   const crossRef = useRef<CrossExchange[]>([]);
   const optionsRef = useRef<OptionsSummary | null>(null);
+  const sentimentRef = useRef<Sentiment | null>(null);
   const healthRef = useRef<Record<string, SourceHealth>>({});
   const pricePathRef = useRef<{ ts: number; price: number }[]>([]);
   const engineRef = useRef<EngineOutput | null>(null);
@@ -212,7 +276,139 @@ export function useRadar() {
       frames: [...framesRef.current],
       cross: [...crossRef.current],
       options: optionsRef.current,
+      sentiment: sentimentRef.current,
+      liqAgg: aggregateLiqs(now),
+      basis: computeBasis(now),
+      sources: SOURCES_INFO.map(({ healthIds, ...s }) => ({
+        ...s,
+        live: healthIds ? healthIds.some((id) => healthRef.current[id]?.status === "LIVE") : null,
+      })),
+      briefing: buildBriefing(now),
     };
+  };
+
+  /* ---------------- agregados de contexto (para el briefing) ---------------- */
+
+  const aggregateLiqs = (now: number) => {
+    const from = now - 5 * 60_000;
+    const map = new Map<string, { usd: number; count: number }>();
+    for (const l of liqsRef.current) {
+      if (l.ts < from) continue;
+      const k = (l.exchange ?? "BINANCE").toUpperCase();
+      const cur = map.get(k) ?? { usd: 0, count: 0 };
+      cur.usd += l.usd; cur.count += 1;
+      map.set(k, cur);
+    }
+    return [...map.entries()]
+      .map(([exchange, v]) => ({ exchange, usd: v.usd, count: v.count }))
+      .sort((a, b) => b.usd - a.usd);
+  };
+
+  const computeBasis = (now: number) => {
+    const p = priceRef.current;
+    if (!isFiniteNumber(p) || p <= 0) return [];
+    return crossRef.current
+      .filter((c) => isFiniteNumber(c.price) && (c.price as number) > 0 && c.fetchedAt !== undefined && now - c.fetchedAt < 90_000)
+      .map((c) => ({ exchange: c.exchange, bps: ((c.price as number) / p - 1) * 10_000 }));
+  };
+
+  /** Narrativa de mercado: SOLO líneas con datos presentes; jamás relleno (§80). */
+  const buildBriefing = (now: number): BriefingLine[] => {
+    const demo = modeRef.current === "DEMO";
+    const T = demo ? ("DEMO" as const) : ("REAL" as const);
+    const L: BriefingLine[] = [];
+    const out = engineRef.current;
+    const p = priceRef.current;
+
+    if (isFiniteNumber(p) && p > 0) {
+      const viaFallback = healthRef.current["coincap"]?.status === "LIVE" && healthRef.current["bn_mark"]?.status !== "LIVE";
+      const chg = isFiniteNumber(changePctRef.current) ? ` (${changePctRef.current >= 0 ? "+" : ""}${changePctRef.current.toFixed(2).replace(".", ",")} % 24h)` : "";
+      const rango = isFiniteNumber(high24Ref.current) && isFiniteNumber(low24Ref.current)
+        ? ` · rango ${formatPrice(low24Ref.current, 0)}–${formatPrice(high24Ref.current, 0)}` : "";
+      const vol = isFiniteNumber(qvRef.current) ? ` · vol ${formatUsd(qvRef.current)}` : "";
+      L.push({ text: `BTC/USDT en ${formatPrice(p)} $${chg}${rango}${vol}`, source: viaFallback ? "CoinCap (fallback)" : "Binance markPrice", truth: viaFallback ? "FALLBACK" : T });
+    }
+
+    if (isFiniteNumber(fundingRef.current)) {
+      const pct = (fundingRef.current * 100).toFixed(4).replace(".", ",");
+      const hist = fundingHistRef.current;
+      const pctl = hist.length >= 20 ? ` · percentil ${Math.round(percentileOf(hist, fundingRef.current) * 100)}` : "";
+      const next = nextFundingRef.current > now ? ` · próximo en ${formatCountdown(nextFundingRef.current - now)}` : "";
+      L.push({ text: `Funding ${pct} %${pctl}${next}`, source: "Binance funding", truth: T });
+    }
+
+    if (out?.ctx.oi.enough) {
+      const oi = out.ctx.oi;
+      L.push({
+        text: `Open Interest ${formatBtc(oi.oiBtc, 0)} · ${oi.changePct >= 0 ? "+" : ""}${oi.changePct.toFixed(2).replace(".", ",")} % en 15m → ${oi.regime} (percentil ${Math.round(oi.percentile * 100)})`,
+        source: "Binance OI", truth: T,
+      });
+    }
+
+    if (out && (out.ctx.hasFut || out.ctx.hasSpot)) {
+      const parts: string[] = [];
+      if (out.ctx.hasFut) parts.push(`futuros ${formatUsd(out.ctx.futCvdUsd)}`);
+      if (out.ctx.hasSpot) parts.push(`spot ${formatUsd(out.ctx.spotCvdUsd)}`);
+      const div = out.ctx.divergences.length ? ` — ${out.ctx.divergences[0]}` : "";
+      L.push({ text: `CVD 5 min: ${parts.join(" · ")}${div}`, source: "aggTrade spot+futuros", truth: T });
+    }
+
+    const agg = aggregateLiqs(now);
+    if (agg.length) {
+      const from = now - 5 * 60_000;
+      let longs = 0; let shorts = 0;
+      for (const l of liqsRef.current) {
+        if (l.ts < from) continue;
+        if (l.side === "SELL") longs += l.usd; else shorts += l.usd;
+      }
+      const st = out && out.ctx.burst.state !== "NORMAL" ? ` · burst ${out.ctx.burst.state}` : "";
+      L.push({
+        text: `Liquidaciones 5 min: longs ${formatUsd(longs)} / shorts ${formatUsd(shorts)} vía ${agg.map((a) => a.exchange).join(" + ")}${st}`,
+        source: "forceOrder + OKX + Bybit + Aggr", truth: T,
+      });
+    }
+
+    if (out?.ctx.taker.enough) {
+      L.push({
+        text: `Taker buy/sell ${out.ctx.taker.feature.value.toFixed(3)} · imbalance ${(out.ctx.taker.imbalance * 100).toFixed(1)} % · percentil ${Math.round(out.ctx.taker.percentile * 100)}`,
+        source: "Binance taker ratio", truth: T,
+      });
+    }
+    if (out?.ctx.positioning.enough) {
+      L.push({
+        text: `Top traders: ratio ${out.ctx.positioning.last.toFixed(2)} · z ${out.ctx.positioning.z.toFixed(1)} · ${out.ctx.positioning.state}`,
+        source: "Binance top trader", truth: T,
+      });
+    }
+    if (out && out.ctx.book.absorption.state !== "NONE") {
+      L.push({
+        text: `${out.ctx.book.absorption.state === "BUY_ABSORPTION" ? "Absorción compradora" : "Absorción vendedora"} al ${Math.round(out.ctx.book.absorption.strength * 100)} % — evento estimado, no identidad de participante`,
+        source: "Order flow", truth: "ESTIMATED",
+      });
+    }
+    if (out && out.ctx.book.spoof.level !== "LOW") {
+      L.push({ text: `SPOOF_RISK ${out.ctx.book.spoof.level}: liquidez top-of-book inestable (inferencia del book, no confirmada)`, source: "Order book L2", truth: "ESTIMATED" });
+    }
+
+    const s = sentimentRef.current;
+    if (s) L.push({ text: `Sentimiento minorista Fear & Greed: ${s.value} — ${s.label}`, source: "alternative.me", truth: s.truth });
+
+    const basis = computeBasis(now);
+    if (basis.length) {
+      L.push({
+        text: `Basis perp vs Binance: ${basis.map((b) => `${b.exchange} ${b.bps >= 0 ? "+" : ""}${b.bps.toFixed(1)} bps`).join(" · ")}`,
+        source: "precios OKX/Bybit", truth: T,
+      });
+    }
+
+    if (out) {
+      const sig = out.signal;
+      const dirTxt = sig.direction === "NO_TRADE"
+        ? `NO TRADE (${sig.noTradeReasons[0] ?? "evidencia insuficiente"})`
+        : `${sig.direction} · confianza ${Math.round(sig.confidence * 100)} %`;
+      L.push({ text: `Régimen ${out.regime.state} · escenario ${out.scenario.state} · ${dirTxt}`, source: "Motor LIQRADAR", truth: "ESTIMATED" });
+    }
+    return L;
   };
 
   /* ---------------- calibración desde el journal (§45) ---------------- */
@@ -422,7 +618,7 @@ export function useRadar() {
         const shortLiq = drift > 0; // precio sube => shorts liquidados (orden BUY)
         for (let i = 0; i < burstN; i++) {
           const qty = 0.05 + Math.random() * Math.random() * 8;
-          cbs.onLiq({ id: uid(), ts: now - Math.floor(Math.random() * 4000), price: p * (1 + gauss() * 0.0002), qty, usd: qty * p, side: shortLiq ? "BUY" : "SELL", symbol: "BTCUSDT", truth: "DEMO" });
+          cbs.onLiq({ id: uid(), ts: now - Math.floor(Math.random() * 4000), price: p * (1 + gauss() * 0.0002), qty, usd: qty * p, side: shortLiq ? "BUY" : "SELL", symbol: "BTCUSDT", truth: "DEMO", exchange: ["BINANCE", "BINANCE", "AGGR", "OKX", "BYBIT"][Math.floor(Math.random() * 5)] });
         }
       }
       if (tick % 5 === 0) { oi *= 1 + drift * 0.6 + gauss() * 0.0012; cbs.onOi(oi, now); }
@@ -465,6 +661,12 @@ export function useRadar() {
       if (tick % 20 === 0) {
         cbs.onOptions({ truth: "DEMO", source: "sim", fetchedAt: now, totalOi: 9_500_000_000 * (1 + gauss() * 0.01), putCallRatio: 0.82 + gauss() * 0.03, atmIv: 54 + gauss() * 2, maxPain: Math.round(p / 2500) * 2500, expiries: 6 });
       }
+      if (tick % 40 === 1) {
+        const prev = sentimentRef.current?.value ?? 52;
+        const v = Math.max(3, Math.min(97, Math.round(prev + gauss() * 7)));
+        const label = v <= 25 ? "Miedo extremo" : v <= 45 ? "Miedo" : v <= 55 ? "Neutral" : v <= 75 ? "Codicia" : "Codicia extrema";
+        sentimentRef.current = { value: v, label, ts: now, truth: "DEMO" };
+      }
       markAll();
     }, 650);
     markAll();
@@ -483,6 +685,7 @@ export function useRadar() {
     bookRef.current = null; bookHistRef.current = []; oiHistRef.current = [];
     fundingHistRef.current = []; klinesRef.current = {}; topRef.current = []; takerRef.current = [];
     bracketsRef.current = []; crossRef.current = []; optionsRef.current = null;
+    sentimentRef.current = null;
     pricePathRef.current = []; engineRef.current = null; framesRef.current = [];
     prevSignalRef.current = null; lastEntryTsRef.current = 0;
     for (const [id, label] of HEALTH_ORDER) {
@@ -496,7 +699,48 @@ export function useRadar() {
 
     const stops: StopFn[] = [];
     if (mode === "REAL") {
-      stops.push(startBinance(cb), startCrossExchange(cb), startOptions(cb));
+      stops.push(
+        startBinance(cb), startCrossExchange(cb), startOptions(cb),
+        startOkxLiq(cb), startBybitLiq(cb), startAggr(cb)
+      );
+      let stopped = false;
+      // sentimiento Fear & Greed (REAL, sin key)
+      const loadSentiment = async () => {
+        const s = await fetchSentiment();
+        if (stopped) return;
+        if (s) {
+          sentimentRef.current = { ...s, ts: Date.now(), truth: "REAL" };
+          report("sentiment", { status: "LIVE", lastUpdate: Date.now(), ageMs: 0, records: (healthRef.current["sentiment"]?.records ?? 0) + 1, error: undefined });
+        } else {
+          report("sentiment", { status: "UNAVAILABLE", error: "sin respuesta" });
+        }
+      };
+      void loadSentiment();
+      const sentimentIv = window.setInterval(() => void loadSentiment(), 15 * 60_000);
+      // precio de respaldo CoinCap SOLO si Binance no entrega precio (§65: fallback etiquetado)
+      const fallbackT = window.setTimeout(async () => {
+        if (stopped || priceRef.current > 0) return;
+        const p = await fetchCoincapPrice();
+        if (stopped || priceRef.current > 0 || p === null) return;
+        priceRef.current = p; priceTsRef.current = Date.now();
+        report("coincap", { status: "LIVE", lastUpdate: Date.now(), ageMs: 0, records: 1, note: "FALLBACK de precio", error: undefined });
+        pushAlert("FALLBACK", "info", "Binance no responde: usando precio CoinCap etiquetado como FALLBACK (nunca como REAL)");
+        bump(0);
+      }, 8000);
+      const fallbackIv = window.setInterval(async () => {
+        if (stopped || priceRef.current <= 0) return;
+        const stale = Date.now() - priceTsRef.current > 30_000;
+        const binanceLive = healthRef.current["bn_mark"]?.status === "LIVE";
+        if (stale && !binanceLive && healthRef.current["coincap"]?.status === "LIVE") {
+          const p = await fetchCoincapPrice();
+          if (!stopped && p !== null) {
+            priceRef.current = p; priceTsRef.current = Date.now();
+            report("coincap", { lastUpdate: Date.now(), ageMs: 0 });
+            bump(0);
+          }
+        }
+      }, 20_000);
+      stops.push(() => { stopped = true; window.clearInterval(sentimentIv); window.clearInterval(fallbackIv); window.clearTimeout(fallbackT); });
     } else {
       stops.push(startDemo(cb));
     }

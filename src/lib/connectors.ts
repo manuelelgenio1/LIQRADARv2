@@ -57,12 +57,14 @@ class ManagedWS {
   private attempts = 0;
   private closed = false;
   private timer = 0;
+  private pingTimer = 0;
 
   constructor(
     private url: string,
     private onMsg: (msg: any) => void,
     private onState: (connected: boolean, reconnects: number) => void,
-    private reconnectsRef: { n: number }
+    private reconnectsRef: { n: number },
+    private ping?: { payload: string; everyMs: number }
   ) {}
 
   start() { this.connect(); }
@@ -78,11 +80,18 @@ class ManagedWS {
     this.ws.onopen = () => {
       this.attempts = 0;
       this.onState(true, this.reconnectsRef.n);
+      if (this.ping) {
+        window.clearInterval(this.pingTimer);
+        this.pingTimer = window.setInterval(() => {
+          try { this.ws?.send(this.ping!.payload); } catch { /* socket cerrado */ }
+        }, this.ping.everyMs);
+      }
     };
     this.ws.onmessage = (e) => {
       try { this.onMsg(JSON.parse(e.data)); } catch { /* mensaje no-JSON: ignorar */ }
     };
     this.ws.onclose = () => {
+      window.clearInterval(this.pingTimer);
       this.onState(false, this.reconnectsRef.n);
       this.scheduleReconnect();
     };
@@ -101,6 +110,7 @@ class ManagedWS {
   stop() {
     this.closed = true;
     window.clearTimeout(this.timer);
+    window.clearInterval(this.pingTimer);
     try { this.ws?.close(); } catch { /* noop */ }
   }
 }
@@ -492,4 +502,154 @@ export function startOptions(cb: Callbacks): StopFn {
   void once();
   const iv = window.setInterval(() => { if (!cancelled) void once(); }, 60_000);
   return () => { cancelled = true; window.clearInterval(iv); };
+}
+
+/* ============================================================
+ * LIQUIDACIONES MULTI-EXCHANGE: OKX + Bybit + Aggr.trade
+ * (fuentes valoradas por el usuario; todas públicas, sin API key)
+ * ============================================================ */
+
+/** OKX v5 — canal liquidation-orders (SWAP). Solo BTC-USDT-SWAP, solo "filled".
+ *  sz viene en contratos; 1 contrato BTC-USDT-SWAP = 0.01 BTC (ctVal oficial). */
+export function startOkxLiq(cb: Callbacks): StopFn {
+  const rec = { n: 0 };
+  const id = "okx_liq";
+  const ws = new ManagedWS(
+    "wss://ws.okx.com:8443/ws/v5/public",
+    (msg) => {
+      if (msg?.event === "subscribe") {
+        cb.report(id, { status: "LIVE", lastUpdate: Date.now(), ageMs: 0, seq: "suscrito", error: undefined });
+        return;
+      }
+      const rows: any[] = Array.isArray(msg?.data) ? msg.data : [];
+      for (const r of rows) {
+        if (r?.instId !== "BTC-USDT-SWAP" || r?.state !== "filled") continue;
+        const px = safeNumber(r.px);
+        const sz = safeNumber(r.sz);
+        if (!isFiniteNumber(px) || px <= 0 || !isFiniteNumber(sz) || sz <= 0) continue;
+        const qty = sz * 0.01; // ctVal BTC-USDT-SWAP
+        cb.onLiq({
+          id: uid(), ts: validateTimestamp(r.ts) ? Number(r.ts) : Date.now(),
+          price: px, qty, usd: px * qty,
+          side: String(r.side).toLowerCase() === "sell" ? "SELL" : "BUY",
+          symbol: "BTCUSDT", truth: "REAL", exchange: "OKX",
+        });
+        rec.n += 1;
+        cb.report(id, { status: "LIVE", lastUpdate: Date.now(), ageMs: 0, records: rec.n, seq: "filled", error: undefined });
+      }
+    },
+    (connected, reconnects) => {
+      if (connected) {
+        try { /* ManagedWS no expone send: el suscribe se envía vía onopen ping+mensaje */ } catch { /* noop */ }
+      }
+      cb.report(id, { status: connected ? "LIVE" : "UNAVAILABLE", reconnects, lastUpdate: connected ? Date.now() : undefined });
+    },
+    { n: 0 },
+    { payload: "ping", everyMs: 20_000 } // OKX requiere ping textual
+  );
+  // la suscripción debe enviarse tras abrir el socket: ManagedWS abre al start(),
+  // así que reintentamos el subscribe hasta que el servidor confirme.
+  const sub = window.setInterval(() => {
+    try {
+      (ws as any).ws?.send(JSON.stringify({ op: "subscribe", args: [{ channel: "liquidation-orders", instType: "SWAP" }] }));
+    } catch { /* aún no abierto */ }
+  }, 1_500);
+  ws.start();
+  cb.report(id, { status: "UNAVAILABLE", note: "conectando…" });
+  return () => { window.clearInterval(sub); ws.stop(); };
+}
+
+/** Bybit v5 — topic liquidation.BTCUSDT (lineal). size en BTC. */
+export function startBybitLiq(cb: Callbacks): StopFn {
+  const rec = { n: 0 };
+  const id = "bybit_liq";
+  const ws = new ManagedWS(
+    "wss://stream.bybit.com/v5/public/linear",
+    (msg) => {
+      if (msg?.topic !== "liquidation.BTCUSDT") return;
+      const d = msg?.data;
+      const price = safeNumber(d?.price);
+      const size = safeNumber(d?.size);
+      if (!isFiniteNumber(price) || price <= 0 || !isFiniteNumber(size) || size <= 0) return;
+      cb.onLiq({
+        id: uid(), ts: validateTimestamp(d?.updatedTime) ? Number(d.updatedTime) : Date.now(),
+        price, qty: size, usd: price * size,
+        side: String(d?.side) === "Sell" ? "SELL" : "BUY",
+        symbol: "BTCUSDT", truth: "REAL", exchange: "BYBIT",
+      });
+      rec.n += 1;
+      cb.report(id, { status: "LIVE", lastUpdate: Date.now(), ageMs: 0, records: rec.n, error: undefined });
+    },
+    (connected, reconnects) => {
+      cb.report(id, { status: connected ? "LIVE" : "UNAVAILABLE", reconnects, lastUpdate: connected ? Date.now() : undefined });
+    },
+    { n: 0 },
+    { payload: JSON.stringify({ op: "ping" }), everyMs: 20_000 }
+  );
+  const sub = window.setInterval(() => {
+    try { (ws as any).ws?.send(JSON.stringify({ op: "subscribe", args: ["liquidation.BTCUSDT"] })); } catch { /* aún no abierto */ }
+  }, 1_500);
+  ws.start();
+  cb.report(id, { status: "UNAVAILABLE", note: "conectando…" });
+  return () => { window.clearInterval(sub); ws.stop(); };
+}
+
+/** Aggr.trade — agregador público de liquidaciones multi-exchange (WS). */
+export function startAggr(cb: Callbacks): StopFn {
+  const rec = { n: 0 };
+  const id = "aggr_liq";
+  const ws = new ManagedWS(
+    "wss://api.aggr.trade/stream",
+    (msg) => {
+      if (msg?.type !== "liquidation" || msg?.symbol !== "BTCUSDT") return;
+      const price = safeNumber(msg.price);
+      const qty = safeNumber(msg.qty);
+      if (!isFiniteNumber(price) || price <= 0 || !isFiniteNumber(qty) || qty <= 0) return;
+      cb.onLiq({
+        id: uid(), ts: validateTimestamp(msg.time) ? Number(msg.time) : Date.now(),
+        price, qty, usd: price * qty,
+        side: String(msg.side).toLowerCase() === "sell" ? "SELL" : "BUY",
+        symbol: "BTCUSDT", truth: "REAL",
+        exchange: String(msg.exchange ?? "AGGR").toUpperCase(),
+      });
+      rec.n += 1;
+      cb.report(id, { status: "LIVE", lastUpdate: Date.now(), ageMs: 0, records: rec.n, error: undefined });
+    },
+    (connected, reconnects) => {
+      cb.report(id, { status: connected ? "LIVE" : "UNAVAILABLE", reconnects, lastUpdate: connected ? Date.now() : undefined });
+    },
+    { n: 0 }
+  );
+  ws.start();
+  cb.report(id, { status: "UNAVAILABLE", note: "conectando…" });
+  return () => ws.stop();
+}
+
+/* ============================================================
+ * CONTEXTO ADICIONAL (REST, sin API key, CORS habilitado)
+ * ============================================================ */
+
+const FNG_LABELS: Record<string, string> = {
+  "Extreme Fear": "Miedo extremo", Fear: "Miedo", Neutral: "Neutral",
+  Greed: "Codicia", "Extreme Greed": "Codicia extrema",
+};
+
+/** Fear & Greed Index (alternative.me) — sentimiento minorista REAL. */
+export async function fetchSentiment(): Promise<{ value: number; label: string } | null> {
+  try {
+    const { data } = await fetchJson("https://api.alternative.me/fng/?limit=1", 8000);
+    const row = data?.data?.[0];
+    const value = safeNumber(Number(row?.value), NaN);
+    if (!isFiniteNumber(value)) return null;
+    return { value, label: FNG_LABELS[String(row?.value_classification)] ?? String(row?.value_classification ?? "—") };
+  } catch { return null; }
+}
+
+/** CoinCap — precio BTC de respaldo (FALLBACK, nunca se mezcla con REAL como si fuera Binance). */
+export async function fetchCoincapPrice(): Promise<number | null> {
+  try {
+    const { data } = await fetchJson("https://api.coincap.io/v2/assets/bitcoin", 8000);
+    const p = safeNumber(Number(data?.data?.priceUsd), NaN);
+    return isFiniteNumber(p) && p > 0 ? p : null;
+  } catch { return null; }
 }

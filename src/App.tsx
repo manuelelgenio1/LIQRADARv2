@@ -16,6 +16,7 @@ import {
   LiquidationsPanel, MtfPanel, OptionsPanel, OrderFlowPanel, RegimePanel,
   ReplayPanel, Reveal, SignalPanel, TruthBadge,
 } from "./components/panels";
+import { BriefingPanel, SourcesPanel } from "./components/context";
 
 /* ------------------------- Error Boundary global (§53) ------------------------- */
 
@@ -87,10 +88,10 @@ function RadarLogo({ size = 34 }: { size?: number }) {
 /* ------------------------------- header ------------------------------- */
 
 function Header({
-  mode, setMode, price, tickDir, changePct, fundingRate, nextFundingTime, now, liveCount, startedAt,
+  mode, setMode, price, tickDir, changePct, fundingRate, nextFundingTime, now, liveCount, totalSources, startedAt,
 }: {
   mode: Mode; setMode: (m: Mode) => void; price: number; tickDir: "up" | "down" | "none";
-  changePct: number; fundingRate: number; nextFundingTime: number; now: number; liveCount: number; startedAt: number;
+  changePct: number; fundingRate: number; nextFundingTime: number; now: number; liveCount: number; totalSources: number; startedAt: number;
 }) {
   const up = tickDir === "up";
   const down = tickDir === "down";
@@ -128,7 +129,7 @@ function Header({
           </div>
           <div>
             <p className="font-mono text-[8px] tracking-[0.24em] text-fog-600">FUENTES LIVE</p>
-            <p className={`font-mono text-xs font-semibold tabular-nums ${liveCount > 0 ? "text-phos-300" : "text-danger-300"}`}>{liveCount} / 17</p>
+            <p className={`font-mono text-xs font-semibold tabular-nums ${liveCount > 0 ? "text-phos-300" : "text-danger-300"}`}>{liveCount} / {totalSources}</p>
           </div>
           <div>
             <p className="font-mono text-[8px] tracking-[0.24em] text-fog-600">SESIÓN</p>
@@ -194,7 +195,8 @@ function Terminal() {
         <Header
           mode={state.mode} setMode={setMode} price={state.price} tickDir={state.tickDir}
           changePct={state.changePct} fundingRate={state.fundingRate}
-          nextFundingTime={state.nextFundingTime} now={state.now} liveCount={liveCount} startedAt={state.startedAt}
+          nextFundingTime={state.nextFundingTime} now={state.now} liveCount={liveCount}
+          totalSources={state.health.length} startedAt={state.startedAt}
         />
 
         {demo && (
@@ -247,6 +249,17 @@ function Terminal() {
             </Reveal>
           </div>
 
+          {/* fila 1.5: QUÉ ESTÁ PASANDO (narrativa + sentimiento + basis + liq/exchange) */}
+          <Reveal>
+            <BriefingPanel
+              briefing={state.briefing}
+              sentiment={state.sentiment}
+              basis={state.basis}
+              liqAgg={state.liqAgg}
+              demo={demo}
+            />
+          </Reveal>
+
           {/* fila 2: order flow · liquidaciones · liquidez */}
           <Reveal>
             <div className="grid grid-cols-12 gap-4">
@@ -289,7 +302,12 @@ function Terminal() {
             </div>
           </Reveal>
 
-          {/* fila 5: alertas */}
+          {/* fila 5: fuentes del radar valoradas por el usuario */}
+          <Reveal>
+            <SourcesPanel sources={state.sources} />
+          </Reveal>
+
+          {/* fila 6: alertas */}
           <Reveal>
             <AlertsPanel alerts={state.alerts} />
           </Reveal>

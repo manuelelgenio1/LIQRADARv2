@@ -70,6 +70,35 @@ export interface LiqEvent {
   side: "SELL" | "BUY";
   symbol: string;
   truth: DataTruth;
+  /** exchange de origen (agregación multi-exchange) */
+  exchange?: string;
+}
+
+/* ---------------- contexto de mercado en vivo ---------------- */
+
+/** Línea de narrativa generada SOLO con datos existentes (§80) */
+export interface BriefingLine {
+  text: string;
+  source: string;
+  truth: DataTruth;
+}
+
+export interface Sentiment {
+  value: number; // 0..100 Fear & Greed
+  label: string;
+  ts: number;
+  truth: DataTruth;
+}
+
+export type SourceKind = "INTEGRADO" | "DERIVADO" | "CUBIERTO" | "EXTERNA";
+
+export interface SourceCard {
+  name: string;
+  stars: number;
+  url?: string;
+  kind: SourceKind;
+  note: string;
+  live?: boolean | null; // estado dinámico de los health ids asociados
 }
 
 export interface BookLevel { price: number; qty: number; }
