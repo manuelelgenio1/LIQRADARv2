@@ -22,6 +22,9 @@ import {
 } from "./lib/safe";
 import Radar from "./components/Radar";
 import { Bar, BipolarBar, Chip, Panel, Reveal, Row, TruthBadge } from "./components/ui";
+import {
+  FootprintPanel, MigrationPanel, OptionsDeepPanel, ValidationPanel, VolumeProfilePanel,
+} from "./components/deep";
 
 /* ------------------------------ Error Boundary ------------------------------ */
 
@@ -485,6 +488,24 @@ function Terminal() {
               <Reveal><FuelLadder out={out} price={state.price} /></Reveal>
             </>
           )}
+
+          {/* -------- profundidad: microestructura + opciones + validación -------- */}
+          <div className="flex items-center gap-3 pt-2">
+            <span className="font-display text-[10px] font-bold tracking-[0.3em] text-phos-400">▚▚</span>
+            <h2 className="font-display text-sm font-bold tracking-[0.26em] text-fog-300">PROFUNDIDAD · LO QUE EL RADAR VE DEBAJO</h2>
+            <span className="h-px flex-1 bg-gradient-to-r from-line to-transparent" />
+          </div>
+
+          <div className="grid grid-cols-12 gap-4">
+            <div className="col-span-12 md:col-span-6 lg:col-span-4"><Reveal><FootprintPanel footprint={state.footprint} /></Reveal></div>
+            <div className="col-span-12 md:col-span-6 lg:col-span-4"><Reveal delay={70}><VolumeProfilePanel vprofile={state.vprofile} price={state.price} /></Reveal></div>
+            <div className="col-span-12 lg:col-span-4"><Reveal delay={140}><MigrationPanel migrations={state.migrations} /></Reveal></div>
+          </div>
+
+          <div className="grid grid-cols-12 gap-4">
+            <div className="col-span-12 lg:col-span-5"><Reveal><OptionsDeepPanel options={state.options} price={state.price} /></Reveal></div>
+            <div className="col-span-12 lg:col-span-7"><Reveal delay={70}><ValidationPanel journal={state.journal} /></Reveal></div>
+          </div>
 
           <Reveal><HealthStrip health={state.health} /></Reveal>
 

@@ -8,7 +8,8 @@
 | §5A Binance Futures | markPrice WS (precio+funding), aggTrade WS (CVD futuros), forceOrder WS (liquidaciones observadas), depth diff WS + snapshot REST con validación de secuencia y resync (§20), REST: ticker 24h, OI, klines 15m/1h/4h/1D/1W, funding history, top trader / taker / global ratios, leverage brackets |
 | §5B Spot | aggTrade WS real → Spot CVD |
 | §5C/§5D Cross-exchange | OKX + Bybit REST público (OI, funding, precio) |
-| §33 Opciones | Deribit público (OI por strike, P/C, DVOL, Max Pain derivado). Si falla ⇒ UNAVAILABLE |
+| §33 Opciones | Deribit público (OI por strike, P/C, DVOL, Max Pain derivado, term structure IV, skew 25Δ derivado). Si falla ⇒ UNAVAILABLE |
+| §49 Predicción vs Realidad | hit rate / error de calibración / expectativa por bucket, régimen y escenario, desde el journal REAL (§65) |
 | §7 Data contract | `src/types.ts` — Provenance/FeatureResult/EventResult/SignalResult |
 | §9 Health Center | panel DATA HEALTH: LIVE/DEGRADED/UNAVAILABLE, latencia, age, records, reconexiones, estado de secuencia |
 | §11/§38 MTF | matriz 15m-1W con pesos distintos, contradicción 0-1 |
@@ -16,6 +17,9 @@
 | §14-§16 CVD | spot y futuros por aggTrade real + divergencias |
 | §18 Funding | percentil histórico, NORMAL/ELEVATED/EXTREME_LONGING/EXTREME_SHORTING, cross-exchange |
 | §20-§24 Order book | imbalance, absorción (evento estimado), SPOOF_RISK (nunca "confirmado") |
+| §22 Migración de liquidez | detección de retiro+recolocación de órdenes grandes en el libro (evento estimado) |
+| §34 Footprint | delta comprador/vendedor por nivel de precio desde aggTrade real (ventana 5m) |
+| §35 Volume profile | POC / VAH / VAL de la sesión actual, cobertura real desde el arranque (§21) |
 | §26-§27 Liquidaciones | forceOrder observado + burst NORMAL→EXTREME_CASCADE |
 | §29/§70 Clústeres | modelo propio ESTIMADO con brackets reales (sin MMR fijo); texto obligatorio "liquidez de liquidación estimada" |
 | §36-§41 Motores | régimen, escenario, contradicción, NO TRADE, señal LONG/SHORT/NO_TRADE con evidencia/contradicciones/target/invalidación |

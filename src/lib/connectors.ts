@@ -450,16 +450,25 @@ export function startOptions(cb: Callbacks): StopFn {
       let callOi = 0; let putOi = 0;
       const byStrike = new Map<number, { call: number; put: number }>();
       const expiries = new Set<string>();
+      // §33: instrumentos por vencimiento para term structure y skew
+      const byExpiry = new Map<string, { strike: number; iv: number; isPut: boolean }[]>();
       for (const r of rows) {
         const name: string = r.instrument_name ?? "";
         const oiBtc = safeNumber(r.open_interest);
         const strike = safeNumber(r.strike_price);
-        expiries.add(name.split("-")[1] ?? "");
+        const expiry = name.split("-")[1] ?? "";
+        expiries.add(expiry);
         const isPut = name.includes("-P-");
         if (isPut) putOi += oiBtc; else callOi += oiBtc;
         const cur = byStrike.get(strike) ?? { call: 0, put: 0 };
         if (isPut) cur.put += oiBtc; else cur.call += oiBtc;
         byStrike.set(strike, cur);
+        const iv = safeNumber(r.mark_iv, NaN);
+        if (isFiniteNumber(iv) && isFiniteNumber(strike) && strike > 0) {
+          const arr = byExpiry.get(expiry) ?? [];
+          arr.push({ strike, iv: iv * 100, isPut });
+          byExpiry.set(expiry, arr);
+        }
       }
       // Max Pain (DERIVED, §66): strike que minimiza el pago agregado
       let maxPain: number | undefined; let minCost = Infinity;
@@ -481,10 +490,45 @@ export function startOptions(cb: Callbacks): StopFn {
 
       const lastBtc = safeNumber(rows[0].mark_price, 0);
       const totalOi = (callOi + putOi) * (lastBtc || 1);
+
+      // §33: term structure — IV ATM por vencimiento (REAL observado)
+      const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+      const expiryTs = (exp: string): number => {
+        // formato típico: "27SEP25" (DDMMMYY)
+        const m = /^(\d{1,2})([A-Z]{3})(\d{2})$/.exec(exp);
+        if (!m) return Infinity;
+        return Date.UTC(2000 + Number(m[3]), MONTHS.indexOf(m[2]), Number(m[1]));
+      };
+      const termStructure = [...byExpiry.entries()]
+        .map(([expiry, insts]) => {
+          if (!insts.length || lastBtc <= 0) return null;
+          // ATM = strike más cercano al precio
+          const atm = insts.reduce((a, b) =>
+            Math.abs(a.strike - lastBtc) < Math.abs(b.strike - lastBtc) ? a : b);
+          return { expiry, iv: atm.iv, ts: expiryTs(expiry) };
+        })
+        .filter((x): x is { expiry: string; iv: number; ts: number } => x !== null && isFiniteNumber(x.iv))
+        .sort((a, b) => a.ts - b.ts)
+        .slice(0, 8)
+        .map(({ expiry, iv }) => ({ expiry, iv }));
+
+      // §33: skew 25Δ aproximado (DERIVADO): put ~-2,5 % vs call ~+2,5 % del vencimiento más cercano
+      let skew25: number | undefined;
+      const front = [...byExpiry.entries()].sort((a, b) => expiryTs(a[0]) - expiryTs(b[0]))[0]?.[1];
+      if (front && lastBtc > 0) {
+        const putSide = front.filter((x) => x.isPut && x.strike <= lastBtc * 0.99)
+          .sort((a, b) => Math.abs(a.strike - lastBtc * 0.975) - Math.abs(b.strike - lastBtc * 0.975))[0];
+        const callSide = front.filter((x) => !x.isPut && x.strike >= lastBtc * 1.01)
+          .sort((a, b) => Math.abs(a.strike - lastBtc * 1.025) - Math.abs(b.strike - lastBtc * 1.025))[0];
+        if (putSide && callSide) skew25 = putSide.iv - callSide.iv;
+      }
+
       cb.onOptions({
         truth: "REAL", source: "deribit", fetchedAt: Date.now(),
         totalOi, putCallRatio: safeRatioGuard(putOi, callOi), atmIv: isFiniteNumber(dvol) ? dvol : undefined,
         maxPain, expiries: expiries.size,
+        termStructure: termStructure.length ? termStructure : undefined,
+        skew25,
       });
       cb.report("deribit", {
         status: "LIVE", latencyMs: Math.round(performance.now() - t0),

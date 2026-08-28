@@ -9,15 +9,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import type {
-  AlertItem, Book, BriefingLine, Candle, CrossExchange, JournalEntry, LiqEvent, Mode,
-  OptionsSummary, Outcome, ReplayFrame, Sentiment, SignalResult, SourceCard, SourceHealth,
-  Timeframe, Trade,
+  AlertItem, Book, BriefingLine, Candle, CrossExchange, FootprintLevel, JournalEntry,
+  LiqEvent, MigrationEvent, Mode, OptionsSummary, Outcome, ReplayFrame, Sentiment,
+  SignalResult, SourceCard, SourceHealth, Timeframe, Trade, VolumeProfileData,
 } from "../types";
 import {
   fetchCoincapPrice, fetchSentiment, startAggr, startBinance, startBybitLiq,
   startCrossExchange, startOkxLiq, startOptions, type Callbacks, type StopFn,
 } from "./connectors";
 import { runEngines, type EngineInput } from "./engines";
+import { detectMigrations, footprintOf, volumeProfileOf } from "./micro";
 import {
   formatBtc, formatCountdown, formatPrice, formatUsd, isFiniteNumber,
   percentileOf, safeNumber, uid,
@@ -51,7 +52,20 @@ export interface RadarState {
   liqAgg: { exchange: string; usd: number; count: number }[];
   basis: { exchange: string; bps: number }[];
   sources: SourceCard[];
+  footprint: FootprintResult;
+  vprofile: VolumeProfileData | null;
+  migrations: MigrationEvent[];
 }
+
+export interface FootprintResult {
+  levels: FootprintLevel[];
+  netDelta: number;
+  buyUsd: number;
+  sellUsd: number;
+  imbalance: number;
+}
+
+const EMPTY_FOOTPRINT: FootprintResult = { levels: [], netDelta: 0, buyUsd: 0, sellUsd: 0, imbalance: 0 };
 
 const HEALTH_ORDER: [string, string][] = [
   ["bn_ws", "Binance WebSocket"],
@@ -182,6 +196,9 @@ export function useRadar() {
   const journalRef = useRef<JournalEntry[]>(loadJournal());
   const alertsRef = useRef<AlertItem[]>([]);
   const framesRef = useRef<ReplayFrame[]>([]);
+  const footprintRef = useRef<FootprintResult>(EMPTY_FOOTPRINT);
+  const vprofileRef = useRef<VolumeProfileData | null>(null);
+  const migrationsRef = useRef<MigrationEvent[]>([]);
   const lastEntryTsRef = useRef(0);
   const lastBumpRef = useRef(0);
   const prevSignalRef = useRef<SignalResult | null>(null);
@@ -279,6 +296,9 @@ export function useRadar() {
       sentiment: sentimentRef.current,
       liqAgg: aggregateLiqs(now),
       basis: computeBasis(now),
+      footprint: footprintRef.current,
+      vprofile: vprofileRef.current,
+      migrations: migrationsRef.current,
       sources: SOURCES_INFO.map(({ healthIds, ...s }) => ({
         ...s,
         live: healthIds ? healthIds.some((id) => healthRef.current[id]?.status === "LIVE") : null,
@@ -563,6 +583,12 @@ export function useRadar() {
         liqUsd: out.ctx.burst.current,
       });
       cap(framesRef.current, 1800);
+
+      /* --- microestructura profunda (§22/§34/§35) sobre datos observados --- */
+      const bucket = Math.max(50, Math.round(input.price / 400)); // ~0,25 % del precio
+      footprintRef.current = footprintOf(futTradesRef.current, bucket, 5 * 60_000, now);
+      vprofileRef.current = volumeProfileOf(futTradesRef.current, bucket * 2, now);
+      migrationsRef.current = detectMigrations(bookHistRef.current, 150_000, 40, bucket);
     } catch (err) {
       pushAlert("ENGINE_ERROR", "critical", `Error en motor: ${String(err instanceof Error ? err.message : err)}`);
     }
@@ -686,6 +712,7 @@ export function useRadar() {
     fundingHistRef.current = []; klinesRef.current = {}; topRef.current = []; takerRef.current = [];
     bracketsRef.current = []; crossRef.current = []; optionsRef.current = null;
     sentimentRef.current = null;
+    footprintRef.current = EMPTY_FOOTPRINT; vprofileRef.current = null; migrationsRef.current = [];
     pricePathRef.current = []; engineRef.current = null; framesRef.current = [];
     prevSignalRef.current = null; lastEntryTsRef.current = 0;
     for (const [id, label] of HEALTH_ORDER) {

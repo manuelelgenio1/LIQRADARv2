@@ -223,7 +223,59 @@ export interface OptionsSummary {
   atmIv?: number;
   maxPain?: number;
   expiries?: number;
+  /** §33: term structure de IV — ATM por vencimiento (REAL observado) */
+  termStructure?: { expiry: string; iv: number }[];
+  /** §33: skew 25Δ aproximado con strikes ±2,5 % (DERIVADO) */
+  skew25?: number;
   error?: string;
+}
+
+/* ------------------------- microestructura profunda ------------------------- */
+
+/** §34: footprint — delta comprador/vendedor por nivel de precio (trades reales) */
+export interface FootprintLevel {
+  price: number;
+  buyUsd: number;
+  sellUsd: number;
+  delta: number;
+  count: number;
+}
+
+/** §35: volume profile de la sesión actual (nunca se inventa histórico, §21) */
+export interface VolumeProfileData {
+  levels: { price: number; volume: number }[];
+  poc: number;
+  vah: number;
+  val: number;
+  bucket: number;
+  coverageSince: number;
+  totalUsd: number;
+}
+
+/** §22: migración de liquidez detectada en el libro (evento estimado) */
+export interface MigrationEvent {
+  id: string;
+  ts: number;
+  side: "bid" | "ask";
+  from: number;
+  to: number;
+  usd: number;
+  /** niveles de precio recorridos */
+  steps: number;
+}
+
+/** §49: predicción vs realidad — validación estadística del journal */
+export interface ValidationStats {
+  resolved: number;
+  total: number;
+  hits: number;
+  hitRate: number;
+  avgConfidence: number;
+  calibrationError: number;
+  buckets: { range: string; n: number; hits: number; rate: number; avgConf: number }[];
+  byRegime: { regime: string; n: number; hits: number; rate: number }[];
+  byScenario: { scenario: string; n: number; hits: number; rate: number }[];
+  expectancyPct: number;
 }
 
 export interface CrossExchange {
