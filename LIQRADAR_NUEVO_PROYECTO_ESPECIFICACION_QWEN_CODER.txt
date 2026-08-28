@@ -1,0 +1,2347 @@
+LIQRADAR - ESPECIFICACIÓN MAESTRA PARA CREAR EL PROYECTO DESDE CERO
+===================================================================
+
+OBJETIVO
+--------
+Construir desde cero una aplicación profesional de análisis de mercado para BTC
+orientada principalmente a futuros/perpetuos, liquidaciones, Open Interest,
+funding, order flow, CVD, profundidad L2, posicionamiento de Top Traders,
+clusters de liquidación, opciones y contexto multi-exchange.
+
+IMPORTANTE:
+Este documento es una especificación de arquitectura + producto + reglas de
+datos + criterios de validación. NO asumir que el código heredado funciona.
+La aplicación nueva debe construirse limpia, modular y testeable.
+
+El objetivo NO es crear un "indicador que adivine el precio".
+El objetivo es construir un RADAR DE EVIDENCIA que:
+- consuma datos reales;
+- indique qué fuente está viva;
+- diferencie observación de estimación;
+- detecte eventos;
+- determine un régimen de mercado;
+- genere LONG / SHORT / NO TRADE;
+- explique la señal;
+- registre qué pasó después;
+- permita validar estadísticamente si la herramienta aporta valor.
+
+===================================================================
+1. PRINCIPIOS NO NEGOCIABLES
+===================================================================
+
+1) MODO REAL NO PUEDE INVENTAR DATOS.
+2) Si falta un dato crítico, el sistema debe degradarse o emitir NO TRADE.
+3) Nunca presentar una estimación como observación real.
+4) Nunca llamar "ballena" a algo que no identifique explícitamente una cuenta.
+5) Nunca llamar "spoof confirmado" a una inferencia de order book.
+6) Nunca llamar "liquidación futura real" a un liquidation cluster estimado.
+7) Nunca permitir que NaN, Infinity, undefined o null contamine el motor.
+8) LONG siempre significa dirección alcista.
+9) SHORT siempre significa dirección bajista.
+10) SHORT SQUEEZE es un mecanismo alcista.
+11) LONG SQUEEZE es un mecanismo bajista.
+12) NO TRADE es una salida válida y necesaria.
+13) No usar "19 indicadores" como 19 votos independientes.
+14) Agrupar features correlacionados para evitar double counting.
+15) La confidence debe poder validarse contra resultados reales.
+16) Toda feature debe tener provenance.
+17) Todo endpoint externo debe tener timeout/retry/circuit-breaker.
+18) Las API keys nunca deben estar en el frontend.
+19) Ninguna API privada debe habilitar trading/retiros para este proyecto.
+20) El build debe verificarse antes de declarar el proyecto terminado.
+
+===================================================================
+2. STACK RECOMENDADO
+===================================================================
+
+Frontend:
+- React
+- TypeScript
+- Vite
+- CSS/Tailwind si se desea, pero evitar dependencia excesiva en UI externa.
+
+Backend:
+- Node.js
+- TypeScript o JavaScript ESM
+- Fastify o Express
+- WebSocket server si hace falta
+- fetch/undici
+
+Persistencia:
+- SQLite como opción principal local
+- WAL mode
+- tablas para trades/L2/liquidations/signals/options snapshots
+- opción futura de PostgreSQL
+
+Testing:
+- Vitest/Jest para unit tests
+- tests de integración
+- tests del pipeline de datos
+- smoke test
+- build test
+
+Windows:
+- INICIAR.bat
+- DIAGNOSTICO.bat
+- REPARAR.bat
+
+===============================================================
+3. ARQUITECTURA
+===============================================================
+
+Aplicar esta arquitectura estricta:
+
+DATA SOURCES
+    |
+    v
+CONNECTOR LAYER
+    |
+    v
+NORMALIZER
+    |
+    v
+DATA VALIDATION
+    |
+    v
+FEATURE ENGINE
+    |
+    v
+EVENT ENGINE
+    |
+    v
+MARKET REGIME ENGINE
+    |
+    v
+SCENARIO ENGINE
+    |
+    v
+SIGNAL ENGINE
+    |
+    v
+CONFIDENCE CALIBRATION
+    |
+    v
+RISK ENGINE
+    |
+    +----> JOURNAL
+    |
+    +----> ALERTS
+    |
+    +----> REPLAY
+    |
+    +----> UI
+
+Nunca mezclar:
+- fetch con UI;
+- cálculo de indicadores con JSX;
+- secrets con frontend;
+- signal logic con transporte;
+- data normalization con rendering.
+
+===============================================================
+4. MODULOS DEL PROYECTO
+===============================================================
+
+/src
+  /components
+  /pages
+  /features
+    /market
+    /orderflow
+    /liquidations
+    /positioning
+    /options
+    /regime
+    /signals
+    /journal
+    /replay
+  /lib
+    /connectors
+    /normalizers
+    /validators
+    /engines
+    /storage
+    /utils
+  /types
+  /config
+
+/server
+  server.ts
+  routes/
+  services/
+  websocket/
+  middleware/
+
+/scripts
+  audit-real-data.ts
+  smoke-test.ts
+  build-check.ts
+
+/tests
+  unit/
+  integration/
+  e2e/
+
+/docs
+  ARCHITECTURE.md
+  DATA_MODEL.md
+  SIGNAL_MODEL.md
+  API_SOURCES.md
+
+===============================================================
+5. FUENTES DE DATOS
+===============================================================
+
+A) BINANCE FUTURES
+------------------
+Usar datos públicos de USD-M Futures para:
+- precio;
+- mark price;
+- index price;
+- aggTrade;
+- depth;
+- Open Interest;
+- funding;
+- long/short ratios;
+- Top Trader ratios;
+- taker buy/sell;
+- forceOrder;
+- leverage brackets.
+
+Para el order book:
+- snapshot inicial REST;
+- diff depth WebSocket;
+- control de update IDs;
+- resync cuando hay gap.
+
+Para liquidaciones observadas:
+- stream oficial forceOrder.
+
+Para CVD:
+- aggTrade real.
+
+B) BINANCE SPOT
+---------------
+Usar aggTrade real para:
+- Spot CVD;
+- comparación Spot vs Futures.
+
+C) OKX
+-------
+Usar para:
+- OI;
+- funding;
+- trades;
+- order book;
+- contexto cross-exchange cuando disponible.
+
+D) BYBIT
+---------
+Usar para:
+- OI;
+- funding;
+- order book;
+- trades;
+- contexto cross-exchange.
+
+E) COINGLASS
+------------
+Fuente agregadora opcional/externa.
+
+Debe ir solo en backend.
+Usar API key desde .env.
+
+Puede aportar:
+- liquidation orders;
+- liquidation map;
+- liquidation heatmap;
+- cross-exchange liquidation aggregation;
+- otros datos habilitados por el plan.
+
+La API no debe ser asumida como gratuita.
+El proyecto debe funcionar parcialmente aunque CoinGlass no esté configurado.
+
+F) HYBLOCK
+----------
+Opcional.
+No bloquear el proyecto por falta de API.
+
+Si hay API:
+usar como fuente externa de liquidation levels/heatmap.
+
+G) OTRAS FUENTES GRATUITAS
+--------------------------
+Se pueden añadir conectores opcionales para fuentes abiertas o gratuitas,
+pero solo después de validar:
+- términos de uso;
+- límites;
+- endpoint;
+- formato;
+- estabilidad.
+
+No crear scraping frágil como dependencia del motor.
+
+===============================================================
+6. SECRETOS
+===============================================================
+
+Usar .env:
+
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+COINGLASS_API_KEY=
+HYBLOCK_API_KEY=
+HYBLOCK_ACCESS_TOKEN=
+
+Reglas:
+- .env en .gitignore;
+- no incluir .env dentro de ZIP distribuido;
+- incluir .env.example;
+- nunca mandar API keys al React frontend;
+- nunca imprimir claves completas en logs.
+
+El radar NO necesita claves privadas de Binance para datos públicos.
+Si se configuran, usarlas solo para endpoints estrictamente necesarios.
+No habilitar permisos de trading/retiros.
+
+===============================================================
+7. DATA CONTRACT
+===============================================================
+
+Toda fuente debe normalizar a tipos comunes.
+
+Ejemplo:
+
+type DataTruth = "REAL" | "ESTIMATED" | "FALLBACK" | "UNAVAILABLE";
+
+type Provenance = {
+  truth: DataTruth;
+  source: string;
+  fetchedAt: number;
+  ageMs: number;
+  latencyMs?: number;
+  quality: number;
+  error?: string;
+};
+
+Toda feature debe poder llevar:
+
+{
+  value,
+  direction,
+  strength,
+  confidence,
+  provenance
+}
+
+Ejemplo:
+
+{
+  value: 0.83,
+  direction: "bullish",
+  strength: 0.77,
+  provenance: {
+    truth: "REAL",
+    source: "binance_futures",
+    ...
+  }
+}
+
+===============================================================
+8. DATA VALIDATION
+===============================================================
+
+Crear funciones:
+
+isFiniteNumber()
+requireFiniteNumber()
+safeNumber()
+safeRatio()
+safePercent()
+validateTimestamp()
+validateStaleness()
+
+REGLA:
+HTTP 200 no significa dato válido.
+
+Invalidar si:
+- NaN;
+- Infinity;
+- undefined;
+- null en campo obligatorio;
+- timestamp demasiado antiguo;
+- precio <= 0;
+- volumen negativo;
+- OI negativo;
+- delta imposible.
+
+Nunca dejar que un dato inválido llegue a computeVerdict().
+
+===============================================================
+9. HEALTH CENTER
+===============================================================
+
+Crear panel:
+
+DATA HEALTH
+
+Cada fuente:
+- LIVE
+- DEGRADED
+- UNAVAILABLE
+
+Mostrar:
+- latency;
+- last update;
+- age;
+- records;
+- sequence status;
+- reconnect count;
+- error;
+- freshness.
+
+Ejemplo:
+
+BINANCE PRICE
+LIVE
+123 ms
+age 0.2s
+
+BINANCE L2
+LIVE
+sequence OK
+age 40ms
+
+COINGLASS
+PARTIAL
+age 7s
+
+OPTIONS
+DEGRADED
+coverage 71%
+
+===============================================================
+10. TEMPORALIDADES
+===============================================================
+
+Usar exactamente:
+
+15m
+1h
+4h
+1D
+1W
+
+Semántica:
+
+15m = ejecución / setup
+1h  = setup
+4h  = estructura
+1D  = régimen
+1W  = contexto
+
+No usar el mismo peso necesariamente.
+
+Cada timeframe puede obtener:
+- trend;
+- structure;
+- momentum;
+- volume;
+- VWAP;
+- OI si existe;
+- contexto.
+
+Para 1W:
+si no existe endpoint semanal, agregar datos reales compatibles, como datos
+diarios.
+Nunca inventar velas.
+
+No convertir indicadores nativos de microestructura artificialmente:
+- order book permanece intradía;
+- funding conserva su naturaleza;
+- liquidation bursts son event-driven.
+
+===============================================================
+11. MTF CONFLUENCE MATRIX
+===============================================================
+
+Crear:
+
+TIMEFRAME | DIRECTION | STRENGTH | DATA QUALITY
+
+15m
+1h
+4h
+1D
+1W
+
+La armonía no es:
+"5 indicadores dicen LONG".
+
+Debe ser:
+"varios horizontes independientes apoyan el mismo escenario".
+
+Detectar:
+- aligned bullish;
+- aligned bearish;
+- mixed;
+- severe conflict.
+
+===============================================================
+12. PRICE / MARKET STRUCTURE
+===============================================================
+
+Crear:
+- swing highs/lows;
+- higher highs;
+- higher lows;
+- lower highs;
+- lower lows;
+- structure breaks;
+- range detection;
+- trend strength;
+- volatility regime.
+
+Separar:
+MARKET STRUCTURE
+de
+MOMENTUM.
+
+No duplicar features correlacionados.
+
+===============================================================
+13. OPEN INTEREST REGIME
+===============================================================
+
+Estados:
+
+LONG_BUILD
+SHORT_BUILD
+LONG_UNWIND
+SHORT_UNWIND
+NEUTRAL
+
+Base:
+PRICE + OI
+
+Agregar:
+- OI change;
+- OI velocity;
+- OI acceleration;
+- OI percentile;
+- duration.
+
+Ejemplos:
+
+Price up + OI up
+    -> LONG_BUILD candidate
+
+Price down + OI up
+    -> SHORT_BUILD candidate
+
+Price up + OI down
+    -> SHORT_UNWIND candidate
+
+Price down + OI down
+    -> LONG_UNWIND candidate
+
+No presentar como certeza de quién abre/cierra salvo que la evidencia lo permita.
+
+===============================================================
+14. SPOT CVD
+===============================================================
+
+Fuente:
+Binance Spot aggTrade.
+
+Acumular:
+buy volume - sell volume.
+
+No usar candle proxy como CVD real.
+
+===============================================================
+15. FUTURES CVD
+===============================================================
+
+Fuente:
+Binance Futures aggTrade.
+
+Acumular delta real.
+
+Mostrar separado:
+Spot CVD
+Futures CVD
+
+===============================================================
+16. CVD DIVERGENCE
+===============================================================
+
+Casos:
+
+PRICE UP
+FUTURES CVD UP
+SPOT CVD DOWN
+
+=> leveraged buying without spot confirmation.
+
+PRICE DOWN
+FUTURES CVD DOWN
+SPOT CVD UP
+
+=> leveraged selling without spot confirmation.
+
+Crear:
+CVD alignment score
+CVD divergence score
+
+===============================================================
+17. TAKER FLOW
+===============================================================
+
+No hacer simplemente:
+taker ratio > 1 = bullish.
+
+Crear:
+- taker imbalance;
+- change;
+- percentile;
+- momentum;
+- relation to price;
+- relation to OI.
+
+===============================================================
+18. FUNDING ENGINE
+===============================================================
+
+No usar:
+positive = bearish absoluto
+negative = bullish absoluto
+
+Crear:
+- current funding;
+- historical percentile;
+- delta;
+- cross-exchange funding;
+- OI relation;
+- liquidation relation.
+
+Estados:
+NORMAL
+ELEVATED
+EXTREME_LONGING
+EXTREME_SHORTING
+
+Funding extreme + OI expansion = higher evidence.
+Funding extreme + liquidation burst = possible squeeze context.
+
+===============================================================
+19. TOP TRADER POSITION FLOW
+===============================================================
+
+Usar:
+- top trader position ratio;
+- historical series;
+- delta;
+- z-score;
+- persistence;
+- timeframe context.
+
+Estados:
+LONG_BUILD
+SHORT_BUILD
+LONG_UNWIND
+SHORT_UNWIND
+NEUTRAL
+
+NO llamar esto "whale concentration" salvo que una fuente entregue realmente
+información de tamaño/concentración.
+
+===============================================================
+20. ORDER BOOK ENGINE
+===============================================================
+
+Implementar reconstrucción:
+
+1. REST snapshot.
+2. WebSocket diff-depth.
+3. Apply updates.
+4. Validate update sequence.
+5. Resync on gap.
+
+Mantener:
+- bids;
+- asks;
+- notional;
+- timestamp.
+
+Features:
+- imbalance;
+- book delta;
+- liquidity added;
+- liquidity removed;
+- persistence;
+- migration.
+
+===============================================================
+21. HISTORICAL L2 HEATMAP
+===============================================================
+
+Guardar:
+timestamp
+price
+side
+notional
+added
+removed
+persistent
+
+Visual:
+X = time
+Y = price
+intensity = observed liquidity.
+
+Guardar cobertura real.
+No inventar histórico anterior al inicio.
+
+===============================================================
+22. LIQUIDITY MIGRATION
+===============================================================
+
+Detectar órdenes grandes que migran de precio.
+
+Ejemplo:
+
+SELL liquidity:
+103000
+102800
+102500
+
+Calcular:
+- migration direction;
+- speed;
+- persistence;
+- size.
+
+===============================================================
+23. ABSORPTION
+===============================================================
+
+BUY ABSORPTION:
+- aggressive sell flow;
+- bid liquidity;
+- little downward price progress;
+- replenishment;
+- recovery/rejection.
+
+SELL ABSORPTION:
+- aggressive buy flow;
+- ask liquidity;
+- little upward price progress;
+- replenishment;
+- rejection.
+
+Guardar:
+- price level;
+- window;
+- aggressive volume;
+- passive depth;
+- price efficiency;
+- replenishment;
+- follow-through.
+
+Output:
+BUY_ABSORPTION
+SELL_ABSORPTION
+NONE
+
+Esto es ESTIMATED EVENT, no identidad de participante.
+
+===============================================================
+24. SPOOF / LIQUIDITY PULL RISK
+===============================================================
+
+No afirmar spoofing confirmado.
+
+Buscar:
+- large order;
+- relative size;
+- fast placement/removal;
+- low execution;
+- repeated behavior;
+- level persistence;
+- repeated pull.
+
+Output:
+LOW
+ELEVATED
+HIGH
+
+Nombre:
+SPOOF_RISK / SUSPICIOUS_PULL
+
+===============================================================
+25. LIQUIDITY SWEEP
+===============================================================
+
+No depender de liquidation clusters propios.
+
+Usar:
+- swing high/low;
+- trade volume;
+- aggressive delta;
+- rejection;
+- liquidations if available.
+
+Debe ser independiente del modelo de clusters.
+
+===============================================================
+26. LIQUIDATIONS OBSERVED
+===============================================================
+
+Binance forceOrder:
+OBSERVED / REAL.
+
+CoinGlass liquidation orders:
+OBSERVED from CoinGlass, provided response is valid.
+
+Nunca decir:
+"todos los traders liquidados"
+
+si la fuente no garantiza cobertura completa.
+
+===============================================================
+27. LIQUIDATION BURST
+===============================================================
+
+Para ventana W:
+
+current liquidation volume / baseline liquidation volume
+
+Clasificar:
+
+NORMAL
+ELEVATED
+BURST
+CASCADE
+EXTREME_CASCADE
+
+Agregar:
+- direction;
+- acceleration;
+- duration;
+- persistence.
+
+===============================================================
+28. CROSS-EXCHANGE LIQUIDATIONS
+===============================================================
+
+Si CoinGlass está disponible:
+
+agregar por:
+- exchange;
+- total;
+- longs;
+- shorts;
+- time.
+
+Construir:
+
+GLOBAL_LIQUIDATION_PRESSURE
+
+Mostrar claramente:
+"via CoinGlass"
+
+Si no:
+UNAVAILABLE
+
+===============================================================
+29. LIQUIDATION CLUSTERS
+===============================================================
+
+Hay dos capas:
+
+A) LIQRADAR OWN MODEL
+B) EXTERNAL MODELS
+
+Propios:
+calcular usando:
+- current price;
+- OI;
+- top trader positioning;
+- leverage brackets;
+- distribution assumptions.
+
+Cada cluster:
+price
+estimatedUsd
+side
+distance
+persistence
+freshness
+confidence
+truth=ESTIMATED
+
+No usar MMR fijo global.
+
+===============================================================
+30. COINGLASS LIQUIDATION MAP
+===============================================================
+
+Consumir endpoint oficial solo en backend.
+
+Guardar:
+- raw response;
+- normalized clusters;
+- source;
+- truth;
+- timestamp.
+
+No asumir side si CoinGlass no lo entrega directamente:
+side = observed / inferred / unknown.
+
+El lado inferido debe tener confidence menor.
+
+===============================================================
+31. CLUSTER CONVERGENCE
+===============================================================
+
+Comparar:
+
+LIQRADAR model
+CoinGlass
+Hyblock si disponible
+
+Encontrar niveles cercanos.
+
+Convergence score:
+- distance;
+- relative size;
+- freshness;
+- number of independent sources.
+
+Ejemplo:
+
+LIQRADAR 102400
+CoinGlass 102350
+Hyblock 102390
+
+=> high convergence
+
+Pero sigue siendo ESTIMATED.
+
+===============================================================
+32. BASIS / PREMIUM
+===============================================================
+
+Usar como contexto:
+
+- perp basis;
+- futures basis;
+- annualized basis;
+- change.
+
+No duplicar peso con funding.
+
+===============================================================
+33. OPTIONS
+===============================================================
+
+Objetivo:
+- múltiples expiries;
+- mayor cobertura de strikes.
+
+Datos:
+- OI;
+- delta OI;
+- calls;
+- puts;
+- Put/Call;
+- IV;
+- ATM IV;
+- 25D skew;
+- IV term structure;
+- Max Pain.
+
+Si cobertura incompleta:
+PARTIAL.
+
+No inventar OI/IV histórico.
+
+===============================================================
+34. FOOTPRINT
+===============================================================
+
+Crear por precio:
+
+BUY volume
+SELL volume
+DELTA
+trades count
+
+Detectar:
+- stacked imbalance;
+- exhaustion;
+- absorption;
+- continuation.
+
+Usar trades reales.
+
+===============================================================
+35. SESSION VOLUME PROFILE
+===============================================================
+
+Sesiones:
+- Asia;
+- London;
+- New York;
+- 24H;
+- Weekly.
+
+Calcular:
+POC
+VAH
+VAL
+HVN
+LVN
+
+No convertir POC automáticamente en señal.
+
+===============================================================
+36. MARKET REGIME ENGINE
+===============================================================
+
+Estados:
+
+TREND_UP
+TREND_DOWN
+LONG_BUILD
+SHORT_BUILD
+SHORT_SQUEEZE
+LONG_SQUEEZE
+ACCUMULATION
+DISTRIBUTION
+COMPRESSION
+EXPANSION
+NEUTRAL
+
+El régimen combina:
+- price structure;
+- OI;
+- CVD;
+- taker;
+- liquidations;
+- order book;
+- absorption;
+- volume.
+
+===============================================================
+37. SCENARIO ENGINE
+===============================================================
+
+Escenarios:
+
+TREND_CONTINUATION
+BREAKOUT
+BREAKDOWN
+MEAN_REVERSION
+SHORT_SQUEEZE
+LONG_SQUEEZE
+LIQUIDATION_CASCADE
+RANGE
+NO_TRADE
+
+Cada escenario debe tener:
+- evidence;
+- contradiction;
+- strength;
+- invalidation;
+- expected horizon.
+
+===============================================================
+38. CONTRADICTION ENGINE
+===============================================================
+
+Ejemplo:
+
+15m LONG
+1h LONG
+4h LONG
+1D SHORT
+1W SHORT
+
+=> contradiction high.
+
+Crear:
+contradictionIndex 0-1
+
+Si alto:
+- reduce confidence;
+- puede forzar NO_TRADE.
+
+===============================================================
+39. NO TRADE ENGINE
+===============================================================
+
+NO TRADE cuando:
+- datos críticos faltan;
+- stale;
+- conflict high;
+- L2 invalid;
+- CVD contradictory;
+- no confirmation;
+- confidence below threshold;
+- target demasiado lejano;
+- signal depends mostly on estimated data.
+
+NO OBLIGAR LONG/SHORT.
+
+===============================================================
+40. SIGNAL ENGINE
+===============================================================
+
+Salida:
+
+LONG ▲
+SHORT ▼
+NO TRADE
+
+Formato:
+
+direction
+confidence
+regime
+scenario
+target
+invalidation
+evidence
+contradictions
+data quality
+
+LONG:
+precio esperado arriba.
+
+SHORT:
+precio esperado abajo.
+
+===============================================================
+41. SIGNAL EXPLANATION
+===============================================================
+
+Mostrar:
+
+LONG ▲
+84%
+
+REASONS FOR:
++ short squeeze
++ OI expansion
++ futures CVD positive
++ spot CVD confirmation
++ short liquidations elevated
++ buy absorption
++ cluster overhead
+
+REASONS AGAINST:
+- sell wall
+- funding extreme
+- daily structure weak
+
+La explicación debe generarse a partir de features reales, no texto inventado.
+
+===============================================================
+42. EVIDENCE SCORE
+===============================================================
+
+Cada señal y feature:
+- strength;
+- freshness;
+- source reliability;
+- truth level;
+- independence.
+
+Ejemplo:
+
+Spot CVD
+strength 0.82
+freshness 0.95
+source reliability 0.98
+truth REAL
+
+External cluster
+strength 0.88
+freshness 0.70
+source reliability 0.90
+truth ESTIMATED
+
+===============================================================
+43. DOUBLE COUNTING CONTROL
+===============================================================
+
+Agrupar por bloques:
+
+PRICE_STRUCTURE
+OI
+FUNDING
+POSITIONING
+TAKER
+SPOT_CVD
+FUTURES_CVD
+ORDER_BOOK
+ABSORPTION
+LIQUIDATION_FLOW
+CLUSTERS
+OPTIONS
+CROSS_EXCHANGE
+
+No permitir:
+funding + funding trend + premium + funding window
+como cuatro votos independientes con el mismo peso.
+
+===============================================================
+44. DYNAMIC WEIGHTS
+===============================================================
+
+Los pesos deben depender del escenario.
+
+Ejemplo:
+
+En SHORT_SQUEEZE:
+más peso:
+- liquidations;
+- OI;
+- CVD;
+- taker;
+- liquidity.
+
+En RANGE:
+más peso:
+- structure;
+- volume profile;
+- absorption;
+- L2.
+
+No crear pesos arbitrarios permanentes sin validación.
+
+===============================================================
+45. CONFIDENCE CALIBRATION
+===============================================================
+
+No usar:
+confidence = score/max*100
+
+Usar:
+1. training;
+2. validation;
+3. calibration;
+4. out-of-sample test.
+
+Registrar:
+predicted probability
+actual outcome
+
+Bucket:
+0.50-0.55
+0.55-0.60
+...
+0.90+
+
+Mostrar reliability diagram.
+
+===============================================================
+46. BACKTEST
+===============================================================
+
+Separar:
+
+MARKET BACKTEST
+- candles;
+- OI;
+- funding;
+- ratios.
+
+MICROSTRUCTURE REPLAY
+- captured L2;
+- captured trades;
+- captured liquidations.
+
+No inventar microstructure histórico.
+
+Para OHLC:
+si TP e invalidation caen dentro de la misma vela:
+no asumir cuál ocurrió primero.
+Usar:
+- lower timeframe data;
+- intrabar data;
+- o marcar ambiguous.
+
+Nunca resolverlo por distancia al open como verdad.
+
+
+===============================================================
+47. WALK-FORWARD
+===============================================================
+
+Ejemplo:
+
+TRAIN 60%
+VALIDATION 20%
+TEST/OOS 20%
+
+Ventanas rolling.
+
+Pesos aprendidos solo en TRAIN.
+Calibration aprendida solo en TRAIN/VALIDATION.
+TEST final intocable.
+
+===============================================================
+48. SIGNAL JOURNAL
+===============================================================
+
+Guardar cada signal:
+
+id
+timestamp
+price
+direction
+confidence
+regime
+scenario
+target
+invalidation
+features snapshot
+data health snapshot
+
+Después:
++5m
++15m
++30m
++1h
++4h
++1D
++1W
+
+Resultados:
+hit_target
+hit_invalidation
+ambiguous
+no_data
+
+===============================================================
+49. PREDICTION VS REALITY
+===============================================================
+
+Dashboard:
+
+signals total
+LONG
+SHORT
+NO TRADE
+
+Por confidence:
+50-60
+60-70
+70-80
+80-90
+90+
+
+Por timeframe:
+15m
+1h
+4h
+1D
+1W
+
+Por regime:
+trend
+squeeze
+range
+etc.
+
+Por escenario.
+
+===============================================================
+50. REPLAY
+===============================================================
+
+Guardar timestamps sincronizados:
+
+price
+trades
+L2
+liquidations
+OI
+CVD
+signals
+
+Replay:
+Play
+Pause
+0.5x
+1x
+2x
+5x
+10x
+
+Mostrar simultáneamente:
+- chart;
+- footprint;
+- L2 heatmap;
+- liquidations;
+- signal.
+
+===============================================================
+51. ALERT ENGINE
+===============================================================
+
+Eventos:
+
+SHORT SQUEEZE STARTED
+LONG SQUEEZE STARTED
+LIQUIDATION CASCADE
+BUY ABSORPTION
+SELL ABSORPTION
+TOP TRADER SHIFT
+LIQUIDITY MIGRATION
+CLUSTER CONVERGENCE
+SPOOF RISK HIGH
+DATA SOURCE LOST
+NO TRADE STATE
+
+===============================================================
+52. UI PRINCIPAL
+===============================================================
+
+Evitar 30 cards pequeños.
+
+Diseño:
+
+MARKET REGIME
+ORDER FLOW
+LIQUIDATIONS
+LIQUIDITY MAP
+SIGNAL
+
+Ejemplo:
+
+MARKET REGIME
+SHORT SQUEEZE ▲
+Strength 87
+
+ORDER FLOW
+Spot CVD ▲▲
+Futures CVD ▲▲▲
+OI ▲▲
+Taker BUY
+Absorption BUY
+
+LIQUIDATIONS
+Shorts $42M
+Cascade 4.8x
+Cross-exchange
+
+LIQUIDITY
+$102450
+$183M estimated
+Convergence 91%
+
+SIGNAL
+LONG ▲
+84%
+Target
+Invalidation
+
+===============================================================
+53. ERROR BOUNDARY
+===============================================================
+
+Toda app React debe tener:
+Global Error Boundary.
+
+Si falla:
+mostrar:
+- error;
+- componente;
+- timestamp;
+- copiar detalles.
+
+Nunca quedarse en pantalla negra.
+
+===============================================================
+54. SAFE FORMATTERS
+===============================================================
+
+Crear:
+
+formatNumber(value, decimals)
+formatPercent(value)
+formatUsd(value)
+formatPrice(value)
+
+Todos deben tolerar:
+undefined
+null
+NaN
+Infinity
+
+Ejemplo:
+
+function formatNumber(v, d=2) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(d) : "—";
+}
+
+Nunca permitir:
+x.toFixed(...)
+sin validación cuando x pueda ser opcional.
+
+===============================================================
+55. SERVER ROUTES
+===============================================================
+
+Diseñar API local:
+
+GET /api/health
+GET /api/data-health
+GET /api/market
+GET /api/oi
+GET /api/funding
+GET /api/positioning
+GET /api/liquidations
+GET /api/liquidations/cross-exchange
+GET /api/clusters/internal
+GET /api/clusters/external
+GET /api/options
+GET /api/orderbook
+GET /api/replay
+GET /api/journal
+
+Todos deben tener:
+- schema validation;
+- timeout;
+- error response normalizado.
+
+===============================================================
+56. WEBSOCKET BRIDGE
+===============================================================
+
+Backend mantiene conexiones con exchanges.
+
+Frontend se conecta a:
+ws://localhost:PORT/ws
+
+Enviar eventos:
+price
+trades
+cvd
+l2
+liquidation
+data-health
+signals
+
+Esto evita depender de CORS del navegador.
+
+===============================================================
+57. RECONNECT STRATEGY
+===============================================================
+
+Cada WebSocket:
+- auto reconnect;
+- exponential backoff;
+- jitter;
+- max retry;
+- sequence validation;
+- resync.
+
+Registrar:
+disconnects
+reconnects
+sequence gaps.
+
+===============================================================
+58. STORAGE
+===============================================================
+
+SQLite:
+
+tables:
+trades
+l2_snapshots
+l2_deltas
+liquidations
+oi_snapshots
+funding_snapshots
+positioning_snapshots
+options_snapshots
+signals
+signal_outcomes
+data_health
+events
+
+Indexes:
+timestamp
+symbol
+exchange
+type
+
+Retention:
+configurable.
+
+===============================================================
+59. PERFORMANCE
+===============================================================
+
+No recalcular todo el mundo en cada trade.
+
+Usar:
+- ring buffers;
+- incremental CVD;
+- incremental OI stats;
+- incremental order book;
+- throttled UI updates.
+
+UI:
+render updates 5-20 fps para microstructure.
+No rerender por cada WebSocket message si no es necesario.
+
+===============================================================
+60. RATE LIMITS
+===============================================================
+
+Implementar:
+- request queue;
+- token bucket si hace falta;
+- backoff;
+- cache;
+- dedup;
+- stale fallback ONLY for display, never for critical signal unless explicitly
+marked.
+
+===============================================================
+61. SECURITY
+===============================================================
+
+Server-side:
+- sanitize inputs;
+- allowlist hosts;
+- no open proxy;
+- no arbitrary URL fetching;
+- no secret in response;
+- no secret in browser;
+- logs redact secrets.
+
+===============================================================
+62. STATIC AUDIT
+===============================================================
+
+Crear script:
+
+npm run audit:real
+
+Debe buscar:
+- simPrice
+- simTick
+- simKline
+- fakeLiquidation
+- Math.random relacionado con market data
+- mockData
+- placeholder market values
+- fixed MMR
+- hardcoded API keys
+
+Resultado:
+PASS / FAIL
+
+También comprobar:
+- no secrets;
+- no forbidden simulation;
+- no fixed MMR;
+- no direct external fetches from UI si deben pasar por backend.
+
+===============================================================
+63. BUILD / TEST
+===============================================================
+
+Scripts:
+
+npm run typecheck
+npm run build
+npm run test
+npm run test:integration
+npm run audit:real
+npm run smoke
+
+Smoke test:
+1. server starts;
+2. /api/health returns 200;
+3. frontend loads;
+4. WebSocket connects;
+5. Binance price received;
+6. OI valid;
+7. funding valid;
+8. CVD valid;
+9. L2 sequence valid;
+10. no NaN;
+11. signal engine can return NO TRADE;
+12. no unhandled exceptions.
+
+===============================================================
+64. WINDOWS
+===============================================================
+
+INICIAR.bat:
+
+- check node;
+- check npm;
+- check package.json;
+- check package-lock;
+- install dependencies if needed;
+- run typecheck;
+- run build;
+- validate dist;
+- start server;
+- health-check;
+- open browser.
+
+If build fails:
+keep window open.
+Print exact command and error.
+
+DIAGNOSTICO.bat:
+print:
+Node
+npm
+Vite
+dependencies
+dist
+.env
+port
+HTTP
+health
+recent logs
+
+REPARAR.bat:
+remove node_modules and lock-preserving cache if needed;
+npm ci;
+build.
+
+===============================================================
+65. ENVIRONMENT MODES
+===============================================================
+
+Modes:
+
+REAL
+DEMO
+
+REAL:
+- no market simulation;
+- no fake signals;
+- no fake prices.
+
+DEMO:
+- simulation allowed;
+- clearly labeled DEMO;
+- never feeds production journal;
+- never mixed with REAL historical metrics.
+
+Default:
+REAL.
+
+===============================================================
+66. OBSERVED VS ESTIMATED LABELING
+===============================================================
+
+Every major panel should show small badge:
+
+REAL
+ESTIMATED
+PARTIAL
+UNAVAILABLE
+
+Examples:
+
+Price: REAL
+OI: REAL
+Liquidations: REAL/OBSERVED
+Liquidation cluster: ESTIMATED
+Spoof risk: ESTIMATED
+Absorption: ESTIMATED EVENT
+CoinGlass map: ESTIMATED
+Options OI: REAL observed from source
+Max Pain: DERIVED
+
+===============================================================
+67. FINAL SIGNAL EXAMPLE
+===============================================================
+
+INPUT:
+
+PRICE:
+up 1.2%
+
+15m:
+LONG
+
+1h:
+LONG
+
+4h:
+LONG
+
+1D:
+LONG
+
+1W:
+NEUTRAL
+
+OI:
+up 4.6%
+
+OI regime:
+LONG_BUILD
+
+Funding:
+95th percentile
+
+Spot CVD:
+positive
+
+Futures CVD:
+strong positive
+
+Top Trader:
+long build
+
+Liquidations:
+shorts elevated
+
+Cascade:
+burst
+
+Absorption:
+BUY
+
+Order Book:
+ask wall above price
+
+Clusters:
+estimated upside cluster near price
+
+External:
+CoinGlass convergence
+
+CONTRADICTIONS:
+medium
+
+OUTPUT:
+
+LONG ▲
+Confidence 82%
+
+Regime:
+SHORT_SQUEEZE / TREND_UP
+
+Target:
+cluster nearest validated upside zone
+
+Invalidation:
+structure/flow invalidation
+
+Reasons:
+explicit feature list.
+
+===============================================================
+68. IMPORTANT: SHORT SQUEEZE SEMANTICS
+===============================================================
+
+Correct:
+
+SHORT SQUEEZE
+    |
+    v
+shorts close / liquidate
+    |
+    v
+buy pressure
+    |
+    v
+price up
+    |
+    v
+LONG ▲
+
+Correct:
+
+LONG SQUEEZE
+    |
+    v
+longs close / liquidate
+    |
+    v
+sell pressure
+    |
+    v
+price down
+    |
+    v
+SHORT ▼
+
+===============================================================
+69. NO TRADE EXAMPLE
+===============================================================
+
+15m LONG
+1h LONG
+4h SHORT
+1D SHORT
+1W SHORT
+
+OI neutral
+CVD mixed
+L2 invalid sequence
+CoinGlass unavailable
+Funding normal
+No liquidation burst
+
+OUTPUT:
+
+NO TRADE
+Confidence 51
+Reason:
+- timeframe conflict;
+- incomplete microstructure;
+- no liquidation confirmation;
+- no cluster confirmation.
+
+===============================================================
+70. LIQUIDATION CLUSTER DISPLAY
+===============================================================
+
+Each cluster:
+
+PRICE:
+102,450
+
+ESTIMATED NOTIONAL:
+$183M
+
+SIDE:
+inferred bullish
+
+MODEL:
+LIQRADAR
+
+EXTERNAL:
+CoinGlass
+
+CONVERGENCE:
+91%
+
+TRUTH:
+ESTIMATED
+
+FRESHNESS:
+2.1s
+
+IMPORTANT:
+do not display:
+"183M real liquidations at 102450"
+
+Display:
+"Estimated liquidation liquidity: $183M"
+
+===============================================================
+71. DATA QUALITY RULES
+===============================================================
+
+Critical signal inputs:
+- price;
+- OI;
+- CVD;
+- liquidation flow;
+- regime.
+
+Optional:
+- external clusters;
+- options;
+- cross exchange;
+- advanced book features.
+
+If critical input unavailable:
+NO TRADE.
+
+If optional unavailable:
+continue but reduce evidence/confidence and show DATA DEGRADED.
+
+===============================================================
+72. INDICADORES REDUNDANTES A ELIMINAR COMO VOTOS INDEPENDIENTES
+===============================================================
+
+Reducir:
+- funding window;
+- premium aislado;
+- momentum duplicado;
+- fast slope;
+- slow slope;
+- global L/S con peso alto;
+- múltiples versiones del mismo funding.
+
+Pueden existir visualmente.
+
+No deben dominar la señal.
+
+===============================================================
+73. QUÉ DEBE SER UN PILAR
+===============================================================
+
+PRICE STRUCTURE
+OI REGIME
+FUNDING EXTREMES
+POSITION FLOW
+TAKER FLOW
+SPOT CVD
+FUTURES CVD
+ORDER BOOK
+ABSORPTION
+LIQUIDATIONS
+LIQUIDATION CLUSTERS
+OPTIONS
+CROSS-EXCHANGE CONTEXT
+
+===============================================================
+74. MÉTRICAS DE ÉXITO
+===============================================================
+
+No usar como principal:
+"cuántas señales generó"
+
+Usar:
+- precision;
+- recall si aplica;
+- hit rate;
+- expectancy;
+- max drawdown en simulación;
+- Sharpe/Sortino si corresponde;
+- calibration error;
+- performance por regime;
+- performance por timeframe;
+- performance por confidence bucket.
+
+IMPORTANTE:
+Un buen backtest no garantiza rendimiento futuro.
+
+===============================================================
+75. REQUISITOS PARA FINALIZAR
+===============================================================
+
+El proyecto solo puede declararse FINAL cuando:
+
+BUILD
+[ ] npm ci
+[ ] typecheck
+[ ] build
+[ ] tests
+[ ] smoke
+
+FRONTEND
+[ ] carga
+[ ] no pantalla negra
+[ ] no NaN
+[ ] Error Boundary
+[ ] Data Health
+
+DATA
+[ ] Binance price
+[ ] Binance OI
+[ ] Binance funding
+[ ] Binance trades
+[ ] Spot trades
+[ ] CVD
+[ ] L2
+[ ] liquidations
+[ ] Top Trader
+[ ] CoinGlass opcional
+[ ] Options
+[ ] cross exchange
+
+ENGINE
+[ ] feature engine
+[ ] event engine
+[ ] regime
+[ ] scenarios
+[ ] contradictions
+[ ] no-trade
+[ ] signal
+[ ] confidence
+
+VALIDATION
+[ ] journal
+[ ] OOS
+[ ] calibration
+[ ] prediction vs reality
+[ ] replay
+
+SECURITY
+[ ] no secrets hardcoded
+[ ] no .env in distribution
+[ ] no open proxy
+[ ] no trading permissions
+
+REALITY
+[ ] no simulation in REAL
+[ ] every feature has provenance
+[ ] estimated data labeled
+[ ] unavailable handled safely
+
+===============================================================
+76. ORDEN DE IMPLEMENTACIÓN
+===============================================================
+
+ETAPA 1:
+Foundation
+- project
+- server
+- Vite
+- React
+- config
+- logging
+- env
+
+ETAPA 2:
+Data layer
+- Binance REST
+- Binance WS
+- Spot
+- OI
+- funding
+- trades
+
+ETAPA 3:
+L2
+- snapshot
+- diff-depth
+- sequence
+- persistence
+- heatmap
+
+ETAPA 4:
+Feature engine
+- CVD
+- OI
+- taker
+- funding
+- positioning
+- volume profile
+
+ETAPA 5:
+Events
+- absorption
+- sweep
+- liquidation burst
+- liquidity migration
+- spoof risk
+
+ETAPA 6:
+Clusters
+- brackets
+- own model
+- CoinGlass
+- optional Hyblock
+- convergence
+
+ETAPA 7:
+Options
+- expiries
+- OI
+- IV
+- skew
+- Max Pain
+
+ETAPA 8:
+Regime/Scenario
+- regime
+- contradiction
+- scenario
+- no trade
+
+ETAPA 9:
+Signal
+- evidence
+- confidence
+- target
+- invalidation
+- explanation
+
+ETAPA 10:
+Journal/Validation
+- signal journal
+- outcomes
+- OOS
+- calibration
+- prediction vs reality
+
+ETAPA 11:
+Replay
+- data synchronization
+- playback
+
+ETAPA 12:
+Production hardening
+- diagnostics
+- Windows
+- rate limits
+- resilience
+- audit
+- security
+
+===============================================================
+77. ARCHITECTURAL RULE FOR QWEN CODER
+===============================================================
+
+NO generar un monolito.
+
+Cada indicador/evento debe ser:
+- un módulo;
+- testeable;
+- documentado;
+- conectado al engine por una interfaz clara.
+
+Ejemplo:
+
+FeatureResult {
+  value;
+  direction;
+  strength;
+  confidence;
+  provenance;
+}
+
+EventResult {
+  type;
+  side;
+  strength;
+  timestamp;
+  evidence;
+}
+
+SignalResult {
+  direction;
+  confidence;
+  regime;
+  scenario;
+  target;
+  invalidation;
+  evidence[];
+  contradictions[];
+  dataHealth;
+}
+
+===============================================================
+78. REGLA ESPECIAL PARA DEBUGGING
+===============================================================
+
+Cuando aparezca un error:
+
+NO:
+- parchear solo la pantalla;
+- ocultar error;
+- convertir undefined en 0 sin analizarlo.
+
+Sí:
+1. identificar fuente;
+2. validar tipo;
+3. verificar normalización;
+4. registrar provenance;
+5. corregir upstream;
+6. agregar test de regresión.
+
+===============================================================
+79. RESULTADO FINAL DESEADO
+===============================================================
+
+La aplicación debe sentirse como un radar profesional:
+
+        REAL MARKET DATA
+               |
+        DATA HEALTH
+               |
+        MARKET STATE
+               |
+       ORDER FLOW + OI
+               |
+       LIQUIDATIONS
+               |
+       LIQUIDITY MAP
+               |
+          REGIME
+               |
+         SCENARIO
+               |
+       CONTRADICTIONS
+               |
+      CALIBRATED SIGNAL
+               |
+     LONG / SHORT / NO TRADE
+               |
+      TARGET + INVALIDATION
+               |
+       JOURNAL / OUTCOME
+
+La UI debe explicar:
+- qué detectó;
+- por qué;
+- con qué datos;
+- qué tan recientes son;
+- qué parte es estimación;
+- qué contradicciones existen;
+- qué pasó después.
+
+===============================================================
+80. INSTRUCCIÓN FINAL PARA OTRA IA
+===============================================================
+
+Construye LIQRADAR DESDE CERO siguiendo este documento.
+
+No copies ciegamente el código antiguo.
+No uses datos simulados en REAL.
+No inventes endpoints.
+No inventes features.
+No ocultes errores.
+No declares una feature completa solo porque existe una función con ese nombre.
+
+Para cada feature:
+
+1. Diseñarla.
+2. Implementarla.
+3. Conectarla al data layer.
+4. Validar datos.
+5. Conectar al feature engine.
+6. Conectar al event/regime engine si corresponde.
+7. Conectar al signal engine si corresponde.
+8. Mostrar en UI.
+9. Añadir provenance.
+10. Añadir test.
+11. Añadir manejo de error.
+12. Añadir documentación.
+
+Cuando una fuente externa no esté disponible:
+    UNAVAILABLE.
+
+Cuando la fuente entregue una estimación:
+    ESTIMATED.
+
+Cuando la información sea observada:
+    REAL / OBSERVED.
+
+Cuando el sistema no tenga suficiente evidencia:
+    NO TRADE.
+
+Nunca crear una falsa sensación de certeza.
+
+OBJETIVO:
+Construir una herramienta de análisis de microestructura y derivados
+reproducible, auditable, resistente a errores y basada en datos reales, no
+una interfaz que solo parezca sofisticada.
+
+FIN DE LA ESPECIFICACIÓN
+================================================================
