@@ -51,7 +51,7 @@ export function volumeProfileOf(trades: Trade[], bucket: number, now: number): V
     totalUsd += notional;
     if (t.ts < coverageSince) coverageSince = t.ts;
   }
-  if (map.size < 5 || !isFiniteNumber(coverageSince)) return null;
+  if (map.size < 3 || !isFiniteNumber(coverageSince)) return null;
 
   const levels = [...map.entries()]
     .map(([price, volume]) => ({ price, volume }))

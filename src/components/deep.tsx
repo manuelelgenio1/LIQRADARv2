@@ -15,7 +15,30 @@ import { computeValidation } from "../lib/validation";
 import {
   clamp01, formatClock, formatNumber, formatPercent, formatPercentRaw, formatPrice, formatUsd,
 } from "../lib/safe";
-import { BipolarBar, Chip, Panel, Row, TruthBadge } from "./ui";
+import { Bar, BipolarBar, Chip, Panel, Row, TruthBadge } from "./ui";
+
+/** Estado de calentamiento vivo: el panel está despierto esperando datos. */
+function Warming({ label, hint }: { label: string; hint: string }) {
+  return (
+    <div className="flex flex-col items-center gap-3 px-6 py-8 text-center">
+      <svg width="46" height="46" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <circle cx="24" cy="24" r="20" stroke="#1c3054" strokeWidth="1.5" />
+        <circle cx="24" cy="24" r="11" stroke="#1c3054" strokeWidth="1" strokeDasharray="3 5" />
+        <g className="radar-rotor">
+          <path d="M24 24 L24 4 A20 20 0 0 1 38 10 Z" fill="#3df5a5" fillOpacity="0.12" />
+          <line x1="24" y1="24" x2="24" y2="4" stroke="#3df5a5" strokeWidth="1.4" />
+        </g>
+        <circle cx="24" cy="24" r="2" fill="#3df5a5" />
+      </svg>
+      <div>
+        <p className="font-display text-[9px] font-bold tracking-[0.24em] text-fog-500">
+          {label}<span className="blink-caret ml-1 text-phos-400">▊</span>
+        </p>
+        <p className="mx-auto mt-1.5 max-w-[250px] font-mono text-[9px] leading-relaxed text-fog-600">{hint}</p>
+      </div>
+    </div>
+  );
+}
 
 /* ------------------------------ §34 FOOTPRINT ------------------------------ */
 
@@ -59,7 +82,7 @@ export function FootprintPanel({ footprint }: { footprint: FootprintResult }) {
   const { levels, netDelta, imbalance, buyUsd, sellUsd } = footprint;
   const maxSide = Math.max(1, ...levels.map((l) => Math.max(l.buyUsd, l.sellUsd)));
   const maxAbsDelta = levels.length ? Math.max(...levels.map((l) => Math.abs(l.delta))) : 0;
-  const hasData = levels.length >= 4;
+  const hasData = levels.length >= 2;
 
   return (
     <Panel
@@ -90,9 +113,7 @@ export function FootprintPanel({ footprint }: { footprint: FootprintResult }) {
         </div>
 
         {!hasData ? (
-          <p className="py-6 text-center font-mono text-[10px] tracking-[0.18em] text-fog-600">
-            RECOPILANDO TRADES REALES<span className="blink-caret ml-1 text-phos-400">▊</span>
-          </p>
+          <Warming label="RECOLECTANDO FOOTPRINT" hint="se arma con cada trade de futuros observado (compra/venta por nivel de precio)" />
         ) : (
           <>
             <div className="grid grid-cols-[64px_1fr_1fr_70px] gap-1.5 border-b border-line pb-1">
@@ -116,7 +137,7 @@ export function FootprintPanel({ footprint }: { footprint: FootprintResult }) {
 /* --------------------------- §35 VOLUME PROFILE --------------------------- */
 
 export function VolumeProfilePanel({ vprofile, price }: { vprofile: VolumeProfileData | null; price: number }) {
-  const hasData = !!vprofile && vprofile.levels.length >= 5;
+  const hasData = !!vprofile && vprofile.levels.length >= 3;
 
   const view = useMemo(() => {
     if (!vprofile) return null;
@@ -135,9 +156,7 @@ export function VolumeProfilePanel({ vprofile, price }: { vprofile: VolumeProfil
     >
       <div className="px-5 pb-4">
         {!hasData || !view || !vprofile ? (
-          <p className="py-10 text-center font-mono text-[10px] tracking-[0.18em] text-fog-600">
-            CONSTRUYENDO PERFIL DESDE EL INICIO DE SESIÓN<span className="blink-caret ml-1 text-phos-400">▊</span>
-          </p>
+          <Warming label="CONSTRUYENDO PERFIL" hint="POC y zona de valor se calculan solo con volumen observado desde el arranque — nunca se inventa histórico" />
         ) : (
           <div className="flex gap-4">
             {/* histograma horizontal: precio arriba→abajo, volumen → */}
@@ -219,9 +238,7 @@ export function MigrationPanel({ migrations }: { migrations: MigrationEvent[] })
     >
       <div className="px-5 pb-4">
         {!hasData ? (
-          <p className="py-8 text-center font-mono text-[10px] tracking-[0.18em] text-fog-600">
-            VIGILANDO ÓRDENES GRANDES QUE CAMBIAN DE PRECIO<span className="blink-caret ml-1 text-phos-400">▊</span>
-          </p>
+          <Warming label="VIGILANDO EL LIBRO" hint="detecta órdenes grandes que se retiran y se recolocan en otro nivel (migración de liquidez)" />
         ) : (
           <>
             <div className="mb-2">
@@ -271,9 +288,7 @@ export function OptionsDeepPanel({ options, price }: { options: OptionsSummary |
     >
       <div className="px-5 pb-4">
         {!live || !options ? (
-          <p className="py-8 text-center font-mono text-[10px] tracking-[0.18em] text-fog-600">
-            ESPERANDO OI DE OPCIONES (DERIBIT)<span className="blink-caret ml-1 text-phos-400">▊</span>
-          </p>
+          <Warming label="ESPERANDO OI DE OPCIONES" hint="Deribit entrega OI por strike, DVOL y vencimientos; si la fuente cae, este panel queda UNAVAILABLE sin inventar nada" />
         ) : (
           <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 md:grid-cols-3">
             <div>
@@ -407,12 +422,18 @@ export function ValidationPanel({ journal }: { journal: JournalEntry[] }) {
         </div>
 
         {!hasSample ? (
-          <p className="py-4 text-center font-mono text-[10px] leading-relaxed tracking-[0.14em] text-fog-600">
-            EL RADAR NECESITA ≥10 SEÑALES RESUELTAS PARA VALIDARSE<span className="blink-caret ml-1 text-phos-400">▊</span>
-            <span className="mt-1 block text-[9px] normal-case tracking-normal text-fog-600/70">
-              lleva {stats.resolved} · la confianza se calibra contra resultados reales, no se inventa
-            </span>
-          </p>
+          <div className="px-2 py-4">
+            <div className="mb-1.5 flex items-center justify-between">
+              <p className="font-mono text-[9px] tracking-[0.18em] text-fog-500">
+                RECOLECTANDO MUESTRA<span className="blink-caret ml-1 text-phos-400">▊</span>
+              </p>
+              <p className="font-mono text-[10px] font-bold tabular-nums text-phos-300">{stats.resolved}/10</p>
+            </div>
+            <Bar pct={stats.resolved / 10} tone="phos" />
+            <p className="mt-2 text-center font-mono text-[9px] leading-relaxed text-fog-600">
+              cada señal se registra y se mide a +15m contra el precio real · sin ≥10 señales resueltas no se publica ninguna métrica — la confianza se calibra contra resultados, no se inventa
+            </p>
+          </div>
         ) : (
           <div className="grid gap-5 lg:grid-cols-2">
             <div>

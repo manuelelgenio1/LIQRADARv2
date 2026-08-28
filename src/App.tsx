@@ -459,6 +459,18 @@ function Terminal() {
             </div>
           )}
 
+          <div className="flex items-center gap-4 pt-1">
+            <span className="font-display text-3xl font-extrabold leading-none tracking-tight text-ink-600">01</span>
+            <div className="min-w-0">
+              <h2 className="font-display text-base font-extrabold tracking-[0.22em] text-fog-100">
+                SUPERFICIE<span className="ml-2 text-phos-400">//</span>
+                <span className="ml-2 text-[11px] font-bold tracking-[0.2em] text-fog-500">PRESIÓN · COMBUSTIBLE · QUEMAS</span>
+              </h2>
+            </div>
+            <span className="ml-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-phos-400 pulse-dot" />
+            <span className="h-px flex-1 shrink bg-gradient-to-r from-line to-transparent" />
+          </div>
+
           {out && (
             <>
               <div className="grid grid-cols-12 gap-4">
@@ -490,11 +502,35 @@ function Terminal() {
           )}
 
           {/* -------- profundidad: microestructura + opciones + validación -------- */}
-          <div className="flex items-center gap-3 pt-2">
-            <span className="font-display text-[10px] font-bold tracking-[0.3em] text-phos-400">▚▚</span>
-            <h2 className="font-display text-sm font-bold tracking-[0.26em] text-fog-300">PROFUNDIDAD · LO QUE EL RADAR VE DEBAJO</h2>
-            <span className="h-px flex-1 bg-gradient-to-r from-line to-transparent" />
+          <div className="flex items-center gap-4 pt-3">
+            <span className="font-display text-3xl font-extrabold leading-none tracking-tight text-ink-600">02</span>
+            <div className="min-w-0">
+              <h2 className="font-display text-base font-extrabold tracking-[0.22em] text-fog-100">
+                PROFUNDIDAD<span className="ml-2 text-phos-400">//</span>
+                <span className="ml-2 text-[11px] font-bold tracking-[0.2em] text-fog-500">LO QUE EL RADAR VE DEBAJO DEL PRECIO</span>
+              </h2>
+              <p className="mt-0.5 font-mono text-[9px] tracking-[0.18em] text-fog-600">
+                FOOTPRINT · PERFIL DE VOLUMEN · MIGRACIÓN DE LIQUIDEZ · OPCIONES · PREDICCIÓN VS REALIDAD
+              </p>
+            </div>
+            <span className="ml-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-phos-400 pulse-dot" />
+            <span className="h-px flex-1 shrink bg-gradient-to-r from-line to-transparent" />
           </div>
+
+          {state.mode === "REAL" && state.footprint.levels.length === 0 && !state.vprofile &&
+            state.now - state.startedAt > 15_000 && (
+            <div className="demo-stripes flex flex-wrap items-center justify-between gap-3 border border-amberx-400/40 bg-amberx-400/10 px-4 py-2.5">
+              <p className="font-mono text-[10px] tracking-[0.12em] text-amberx-300">
+                SIN FLUJO DE TRADES TODAVÍA — si tu red bloquea Binance/OKX/Bybit, activa DEMO para ver el instrumento completo
+              </p>
+              <button
+                onClick={() => setMode("DEMO")}
+                className="border border-amberx-400/60 px-3 py-1 font-display text-[9px] font-bold tracking-[0.2em] text-amberx-300 transition-colors hover:bg-amberx-400/15"
+              >
+                ACTIVAR DEMO
+              </button>
+            </div>
+          )}
 
           <div className="grid grid-cols-12 gap-4">
             <div className="col-span-12 md:col-span-6 lg:col-span-4"><Reveal><FootprintPanel footprint={state.footprint} /></Reveal></div>
@@ -505,6 +541,18 @@ function Terminal() {
           <div className="grid grid-cols-12 gap-4">
             <div className="col-span-12 lg:col-span-5"><Reveal><OptionsDeepPanel options={state.options} price={state.price} /></Reveal></div>
             <div className="col-span-12 lg:col-span-7"><Reveal delay={70}><ValidationPanel journal={state.journal} /></Reveal></div>
+          </div>
+
+          <div className="flex items-center gap-4 pt-3">
+            <span className="font-display text-3xl font-extrabold leading-none tracking-tight text-ink-600">03</span>
+            <div className="min-w-0">
+              <h2 className="font-display text-base font-extrabold tracking-[0.22em] text-fog-100">
+                SALUD DE DATOS<span className="ml-2 text-phos-400">//</span>
+                <span className="ml-2 text-[11px] font-bold tracking-[0.2em] text-fog-500">QUÉ FUENTE ESTÁ VIVA Y CUÁN FRESCA</span>
+              </h2>
+            </div>
+            <span className="ml-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-phos-400 pulse-dot" />
+            <span className="h-px flex-1 shrink bg-gradient-to-r from-line to-transparent" />
           </div>
 
           <Reveal><HealthStrip health={state.health} /></Reveal>

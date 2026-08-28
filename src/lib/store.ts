@@ -598,7 +598,7 @@ export function useRadar() {
 
   /* ---------------- simulador DEMO (§65: etiquetado y aislado) ---------------- */
   const startDemo = (cbs: Callbacks): StopFn => {
-    let p = 97_400;
+    let p = 79_850;
     let drift = 0.0004;
     let oi = 82_000;
     let tick = 0;
@@ -627,16 +627,16 @@ export function useRadar() {
     const iv = window.setInterval(() => {
       tick += 1;
       if (tick % 40 === 0) drift = (Math.random() - 0.5) * 0.0016;
-      p *= 1 + drift + gauss() * 0.00055;
+      p *= 1 + drift + gauss() * 0.0011;
       const now = Date.now();
       const buyBias = drift > 0 ? 0.62 : 0.38;
-      const nFut = 2 + Math.floor(Math.random() * 6);
+      const nFut = 3 + Math.floor(Math.random() * 9);
       for (let i = 0; i < nFut; i++) {
-        cbs.onTrade("fut", { ts: now, price: p * (1 + gauss() * 0.00015), qty: 0.01 + Math.random() * Math.random() * 2.5, isBuyerMaker: Math.random() > buyBias });
+        cbs.onTrade("fut", { ts: now, price: p * (1 + gauss() * 0.0004), qty: 0.01 + Math.random() * Math.random() * 2.5, isBuyerMaker: Math.random() > buyBias });
       }
-      const nSpot = 1 + Math.floor(Math.random() * 4);
+      const nSpot = 1 + Math.floor(Math.random() * 5);
       for (let i = 0; i < nSpot; i++) {
-        cbs.onTrade("spot", { ts: now, price: p * (1 + gauss() * 0.00015), qty: 0.01 + Math.random() * Math.random() * 1.6, isBuyerMaker: Math.random() > buyBias + 0.04 });
+        cbs.onTrade("spot", { ts: now, price: p * (1 + gauss() * 0.0004), qty: 0.01 + Math.random() * Math.random() * 1.6, isBuyerMaker: Math.random() > buyBias + 0.04 });
       }
       // liquidaciones: ráfagas ocasionales contra el lado perdedor
       if (Math.random() < (Math.abs(drift) > 0.0007 ? 0.5 : 0.14)) {
